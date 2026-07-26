@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -9,11 +8,10 @@ import (
 	"github.com/theopenlane/courier/pkg/engine"
 )
 
-// ErrNotFormatted is returned by fmt --check when files are not canonical
-var ErrNotFormatted = errors.New("files are not in canonical form, run 'courier fmt'")
-
+// flagFmtCheck fails fmt instead of rewriting files when set
 var flagFmtCheck bool
 
+// fmtCmd normalizes the workspace yaml files into canonical form
 var fmtCmd = &cobra.Command{
 	Use:   "fmt",
 	Short: "normalize controls.yaml and policies.yaml into canonical form",
@@ -46,6 +44,7 @@ var fmtCmd = &cobra.Command{
 	},
 }
 
+// init registers the fmt command
 func init() {
 	fmtCmd.Flags().BoolVar(&flagFmtCheck, "check", false, "fail instead of rewriting files")
 	rootCmd.AddCommand(fmtCmd)

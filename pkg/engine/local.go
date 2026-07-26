@@ -16,7 +16,9 @@ import (
 )
 
 const (
-	dirPerm  = 0o755
+	// dirPerm is the permission mode for created directories
+	dirPerm = 0o755
+	// filePerm is the permission mode for written files
 	filePerm = 0o644
 )
 

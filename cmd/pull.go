@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// pullCmd exports Openlane records into the workspace
 var pullCmd = &cobra.Command{
 	Use:   "pull",
 	Short: "export organization controls, mappings, and policies into the workspace",
@@ -32,6 +33,7 @@ var pullCmd = &cobra.Command{
 	},
 }
 
+// init registers the pull command
 func init() {
 	rootCmd.AddCommand(pullCmd)
 }

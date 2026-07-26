@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// applyCmd creates and updates Openlane records from the workspace
 var applyCmd = &cobra.Command{
 	Use:   "apply",
 	Short: "create and update Openlane controls, mappings, and policies from the workspace",
@@ -44,6 +45,7 @@ var applyCmd = &cobra.Command{
 	},
 }
 
+// init registers the apply command
 func init() {
 	rootCmd.AddCommand(applyCmd)
 }

@@ -1,4 +1,3 @@
-// Package cmd implements the courier command line interface
 package cmd
 
 import (
@@ -10,10 +9,13 @@ import (
 	"github.com/theopenlane/courier/pkg/engine"
 )
 
+// defaultHost is the Openlane API host used when none is configured
 const defaultHost = "https://api.theopenlane.io"
 
+// flagConfig is the path to an explicit config file
 var flagConfig string
 
+// rootCmd is the base courier command
 var rootCmd = &cobra.Command{
 	Use:   "courier",
 	Short: "export and import Openlane organization controls and policies as structured files",
@@ -36,6 +38,7 @@ func Execute() {
 	}
 }
 
+// init registers the persistent flags
 func init() {
 	rootCmd.PersistentFlags().StringVar(&flagConfig, "config", "", "path to a config file (default "+engine.DefaultConfigFile+")")
 	rootCmd.PersistentFlags().String("host", defaultHost, "Openlane API host")

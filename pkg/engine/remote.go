@@ -17,36 +17,54 @@ var pageSize = int64(defaultPageSize)
 
 // RemoteControl is the authorable view of a control as it exists in the API
 type RemoteControl struct {
-	ID          string   `json:"id"`
-	RefCode     string   `json:"refCode"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Category    string   `json:"category"`
-	Subcategory string   `json:"subcategory"`
-	Tags        []string `json:"tags"`
+	// ID is the Openlane ULID of the control
+	ID string `json:"id"`
+	// RefCode is the unique reference code of the control
+	RefCode string `json:"refCode"`
+	// Title is the human readable title of the control
+	Title string `json:"title"`
+	// Description describes what the control is supposed to accomplish
+	Description string `json:"description"`
+	// Category is the category of the control
+	Category string `json:"category"`
+	// Subcategory is the subcategory of the control
+	Subcategory string `json:"subcategory"`
+	// Tags associated with the control
+	Tags []string `json:"tags"`
 }
 
 // RemoteRef identifies a control participating in a mapping or policy edge
 type RemoteRef struct {
-	ID      string `json:"id"`
+	// ID is the Openlane ULID of the referenced control
+	ID string `json:"id"`
+	// RefCode is the reference code of the referenced control
 	RefCode string `json:"refCode"`
 }
 
 // RemoteMapping is a mapped-control record as it exists in the API, only the
 // participant edges are needed to derive mappedControls lists
 type RemoteMapping struct {
-	ID   string      `json:"id"`
+	// ID is the Openlane ULID of the mapped control record
+	ID string `json:"id"`
+	// From are the controls on the from side of the mapping
 	From []RemoteRef `json:"from"`
-	To   []RemoteRef `json:"to"`
+	// To are the controls on the to side of the mapping
+	To []RemoteRef `json:"to"`
 }
 
 // RemotePolicy is an internal policy as it exists in the API
 type RemotePolicy struct {
-	ID       string      `json:"id"`
-	Name     string      `json:"name"`
-	KindName *string     `json:"internalPolicyKindName"`
-	Details  *string     `json:"details"`
-	Tags     []string    `json:"tags"`
+	// ID is the Openlane ULID of the policy
+	ID string `json:"id"`
+	// Name is the unique name of the policy
+	Name string `json:"name"`
+	// KindName is the policy kind, e.g. Security, Operational
+	KindName *string `json:"internalPolicyKindName"`
+	// Details is the stored policy body
+	Details *string `json:"details"`
+	// Tags associated with the policy
+	Tags []string `json:"tags"`
+	// Controls are the controls linked to the policy
 	Controls []RemoteRef `json:"controls"`
 }
 

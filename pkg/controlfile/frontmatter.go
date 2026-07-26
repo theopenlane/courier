@@ -7,6 +7,7 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+// frontmatterDelimiter separates the YAML frontmatter block from the body
 const frontmatterDelimiter = "---"
 
 // MarshalPolicyMarkdown renders a policy markdown document: a YAML

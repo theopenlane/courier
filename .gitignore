@@ -41,3 +41,6 @@ junit.xml
 
 bin/*
 courier
+
+# local courier configuration, holds the API token
+.courier.yaml

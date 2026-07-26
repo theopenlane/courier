@@ -10,8 +10,10 @@ import (
 const MarkdownExtension = ".md"
 
 var (
+	// unsafePathChars matches characters that cannot be used in file names
 	unsafePathChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
-	repeatedDashes  = regexp.MustCompile(`-{2,}`)
+	// repeatedDashes matches dash runs left behind by character replacement
+	repeatedDashes = regexp.MustCompile(`-{2,}`)
 )
 
 // PolicyMarkdownPath returns the canonical workspace-relative markdown path

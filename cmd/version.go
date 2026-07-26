@@ -8,8 +8,10 @@ import (
 	"github.com/theopenlane/courier/constants"
 )
 
+// flagShortVersion prints only the version number
 var flagShortVersion bool
 
+// versionCmd prints the courier version
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "print the courier version",
@@ -24,6 +26,7 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+// init registers the version command
 func init() {
 	versionCmd.Flags().BoolVar(&flagShortVersion, "short", false, "print only the version number")
 	rootCmd.AddCommand(versionCmd)

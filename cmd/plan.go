@@ -12,13 +12,17 @@ import (
 	"github.com/theopenlane/courier/pkg/engine"
 )
 
+// changesExitCode is the exit code returned by plan --detailed-exitcode when changes exist
 const changesExitCode = 2
 
 var (
-	flagPlanJSON     bool
+	// flagPlanJSON renders the plan as JSON
+	flagPlanJSON bool
+	// flagDetailedExit exits with changesExitCode when the plan contains changes
 	flagDetailedExit bool
 )
 
+// planCmd shows the changes apply would make to Openlane
 var planCmd = &cobra.Command{
 	Use:   "plan",
 	Short: "show the changes apply would make to Openlane",
@@ -47,6 +51,7 @@ var planCmd = &cobra.Command{
 	},
 }
 
+// init registers the plan command
 func init() {
 	planCmd.Flags().BoolVar(&flagPlanJSON, "json", false, "output the plan as JSON")
 	planCmd.Flags().BoolVar(&flagDetailedExit, "detailed-exitcode", false, "exit with code 2 when the plan contains changes")
