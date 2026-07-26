@@ -1,0 +1,24 @@
+{
+    "extends": [
+        "config:recommended"
+    ],
+    "postUpdateOptions": [
+        "gomodTidy"
+    ],
+    "labels": [
+        "dependencies"
+    ],
+    "minimumReleaseAge": "7 days",
+    "packageRules": [
+        {
+            "groupName": "all patch dependencies",
+            "groupSlug": "all-patch",
+            "matchPackageNames": [
+                "*"
+            ],
+            "matchUpdateTypes": [
+                "patch"
+            ]
+        }
+    ]
+}

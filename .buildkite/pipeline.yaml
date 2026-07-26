@@ -1,0 +1,80 @@
+env:
+  APP_NAME: ${BUILDKITE_PIPELINE_SLUG}
+  SONAR_HOST: "https://sonarcloud.io"
+steps:
+  - group: ":knife: Pre-check"
+    key: "precheck"
+    steps:
+      - label: ":golang: generated artifacts up to date"
+        key: "generate"
+        plugins:
+          - docker#v5.14.0:
+              image: "ghcr.io/theopenlane/build-image:latest"
+              always-pull: true
+              command: ["task", "ci"]
+              environment:
+                - "GOTOOLCHAIN=auto"
+  - group: ":test_tube: Tests"
+    key: "tests"
+    depends_on: "precheck"
+    steps:
+      - label: ":golangci-lint: lint :lint-roller:"
+        key: "lint"
+        plugins:
+          - docker#v5.14.0:
+              image: "ghcr.io/theopenlane/build-image:latest"
+              always-pull: true
+              cancel_on_build_failing: true
+              command: ["task", "go:lint"]
+              environment:
+                - "GOTOOLCHAIN=auto"
+      - label: ":golang: go test"
+        key: "go_test"
+        plugins:
+          - docker#v5.14.0:
+              image: "ghcr.io/theopenlane/build-image:latest"
+              always-pull: true
+              command: ["task", "go:test:cover"]
+        artifact_paths: ["coverage.out"]
+      - label: ":hammer: build and smoke test"
+        key: "smoke_test"
+        plugins:
+          - docker#v5.14.0:
+              image: "ghcr.io/theopenlane/build-image:latest"
+              always-pull: true
+              command: ["task", "test:smoke"]
+              environment:
+                - "GOTOOLCHAIN=auto"
+      - label: ":github: upload PR reports"
+        key: "scan-upload-pr"
+        if: build.pull_request.id != null
+        depends_on: ["go_test"]
+        plugins:
+          - cluster-secrets#v1.0.0:
+              variables:
+                SONAR_TOKEN: SONAR_TOKEN
+          - artifacts#v1.9.4:
+              download: "coverage.out"
+              step: "go_test"
+          - docker#v5.14.0:
+              image: "sonarsource/sonar-scanner-cli:12.1"
+              environment:
+                - "SONAR_TOKEN"
+                - "SONAR_HOST_URL=$SONAR_HOST"
+                - "SONAR_SCANNER_OPTS=-Dsonar.pullrequest.branch=$BUILDKITE_BRANCH -Dsonar.pullrequest.base=$BUILDKITE_PULL_REQUEST_BASE_BRANCH -Dsonar.pullrequest.key=$BUILDKITE_PULL_REQUEST"
+      - label: ":github: upload reports"
+        key: "scan-upload"
+        if: build.branch == "main"
+        depends_on: ["go_test"]
+        plugins:
+          - cluster-secrets#v1.0.0:
+              variables:
+                SONAR_TOKEN: SONAR_TOKEN
+          - artifacts#v1.9.4:
+              download: coverage.out
+              step: "go_test"
+          - docker#v5.14.0:
+              image: "sonarsource/sonar-scanner-cli:12.1"
+              environment:
+                - "SONAR_TOKEN"
+                - "SONAR_HOST_URL=$SONAR_HOST"

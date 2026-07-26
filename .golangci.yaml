@@ -1,0 +1,33 @@
+version: "2"
+run:
+  modules-download-mode: readonly
+  tests: false
+  allow-parallel-runners: true
+linters:
+  enable:
+    - bodyclose
+    - err113
+    - gocritic
+    - gosec
+    - misspell
+    - mnd
+    - noctx
+    - revive
+  exclusions:
+    generated: lax
+    warn-unused: true
+    presets:
+      - comments # undisable this after fixing all comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - bin/*
+      - .buildkite/*
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - .buildkite/*

@@ -1,0 +1,9 @@
+# courier configuration. Comments describe each key; edit values as needed.
+# Host is the base URL of the Openlane API
+host: https://api.theopenlane.io
+# Token is the API token used for authentication
+token: ""
+# OrganizationID optionally scopes requests to a specific organization, only needed for multi-organization tokens
+organization-id: ""
+# Dir is the workspace directory holding the exported files
+dir: .

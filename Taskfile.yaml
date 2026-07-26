@@ -1,0 +1,68 @@
+version: '3'
+env:
+  GOFLAGS: -buildvcs=false
+  GO_INLINE_FLAG: "-gcflags=all=-l"
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list
+  ci:
+    desc: runs the CI pre-check, tidy plus generated artifacts must be committed
+    cmds:
+      - task: go:tidy
+      - task: config:generate
+      - git diff --exit-code
+  # === Build ===
+  go:build:
+    aliases: [build]
+    env:
+      GOFLAGS: "{{.GO_INLINE_FLAG}}"
+    desc: build the courier binary
+    cmds:
+      - CGO_ENABLED=0 go build -o courier .
+  go:build:ci:
+    desc: build the courier binary in CI
+    cmds:
+      - CGO_ENABLED=0 go build -mod=readonly -o bin/courier .
+  # === Test ===
+  go:test:
+    desc: run the go test suite
+    cmds:
+      - go test -v ./...
+  go:test:cover:
+    desc: run the go test suite with coverage for sonar
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+  test:smoke:
+    desc: build the binary and run the smoke test used by the brew tap
+    deps: ['go:build']
+    cmds:
+      - bash test/test.sh
+  # === Lint / Format ===
+  go:lint:
+    desc: run golangci-lint
+    cmds:
+      - golangci-lint run --config=.golangci.yaml --verbose
+  go:fmt:
+    desc: format all go code
+    cmds:
+      - go fmt ./...
+  go:tidy:
+    aliases: [tidy]
+    desc: run go mod tidy
+    cmds:
+      - go mod tidy
+  # === Generate ===
+  config:generate:
+    aliases: [generate]
+    desc: generate the config JSON schema, example config, and example env file
+    cmds:
+      - go run ./internal/jsonschema
+  # === Pre-commit ===
+  precommit-full:
+    desc: lint the project against all files
+    cmds:
+      - pre-commit install && pre-commit install-hooks
+      - pre-commit autoupdate
+      - pre-commit run --show-diff-on-failure --color=always --all-files
