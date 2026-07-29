@@ -15,13 +15,16 @@ const alreadyExistsCode = "ALREADY_EXISTS"
 
 var (
 	// ErrMissingToken is returned when no API token is configured
-	ErrMissingToken = errors.New("missing API token, set CORE_TOKEN, add token to the config file, or pass --token")
+	ErrMissingToken = errors.New("missing API token, set COURIER_TOKEN, add token to config/.config.yaml, or pass --token")
 
 	// ErrMultipleControlsFound is returned when a mapped control refCode matches more than one control
 	ErrMultipleControlsFound = errors.New("multiple controls found for refCode")
 
 	// ErrMissingMarkdown is returned when a policy manifest entry references a markdown file that does not exist
 	ErrMissingMarkdown = errors.New("policy markdown file not found")
+
+	// ErrUnrecognizedFile is returned when a file does not validate as a control inventory or a policy manifest
+	ErrUnrecognizedFile = errors.New("file is not a recognizable control inventory or policy manifest")
 )
 
 // fmtErr wraps a sentinel error with a detail value

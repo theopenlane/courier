@@ -43,4 +43,6 @@ bin/*
 courier
 
 # local courier configuration, holds the API token
-.courier.yaml
+config/.config.yaml
+data/
+.claude

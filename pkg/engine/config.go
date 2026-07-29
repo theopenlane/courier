@@ -15,12 +15,12 @@ import (
 
 // DefaultConfigFile is the config file loaded from the working directory when
 // no explicit path is given
-const DefaultConfigFile = ".courier.yaml"
+const DefaultConfigFile = "./config/.config.yaml"
 
 // envPrefix is the prefix for environment variable overrides
 const envPrefix = "COURIER_"
 
-// Settings are the connection and workspace settings for the binary
+// Settings are the connection and store settings for the binary
 type Settings struct {
 	// Host is the base URL of the Openlane API
 	Host string `koanf:"host" default:"https://api.theopenlane.io"`
@@ -28,7 +28,7 @@ type Settings struct {
 	Token string `koanf:"token" default:"" sensitive:"true"`
 	// OrganizationID optionally scopes requests to a specific organization, only needed for multi-organization tokens
 	OrganizationID string `koanf:"organization-id" default:""`
-	// Dir is the workspace directory holding the exported files
+	// Dir is the directory holding the exported files
 	Dir string `koanf:"dir" default:"."`
 }
 

@@ -73,15 +73,15 @@ tasks:
       - go run ./internal/jsonschema
 
   ensure-config:
-    desc: create .courier.yaml from the example config when none exists
+    desc: create config/.config.yaml from the example config when none exists
     silent: true
     cmds:
       - |
-        if [ ! -f .courier.yaml ]; then
-          echo ".courier.yaml not found, copying from config/config.example.yaml"
-          cp config/config.example.yaml .courier.yaml
+        if [ ! -f config/.config.yaml ]; then
+          echo "config/.config.yaml not found, copying from config/config.example.yaml"
+          cp config/config.example.yaml config/.config.yaml
         else
-          echo ".courier.yaml already exists"
+          echo "config/.config.yaml already exists"
         fi
 
   # === Pre-commit ===

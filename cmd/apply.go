@@ -4,27 +4,40 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/theopenlane/courier/pkg/engine"
 )
 
-// applyCmd creates and updates Openlane records from the workspace
+// flagApplyFile applies a single yaml file resolved by content
+var flagApplyFile string
+
+// applyCmd pushes the store files to Openlane
 var applyCmd = &cobra.Command{
 	Use:   "apply",
-	Short: "create and update Openlane controls, mappings, and policies from the workspace",
+	Short: "push store controls, mappings, and policies to Openlane",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		client, plan, err := computePlan(cmd.Context())
+		client, settings, err := newClient()
 		if err != nil {
 			return err
 		}
 
-		if !plan.HasChanges() {
-			fmt.Println("no changes, Openlane matches the workspace")
+		var (
+			store *engine.Store
+			kinds []engine.Kind
+		)
 
-			return nil
+		if flagApplyFile != "" {
+			store, kinds, err = engine.LoadFile(flagApplyFile)
+		} else {
+			kinds = selectedKinds(cmd.Flags())
+			store, err = engine.NewStore(settings.Dir)
 		}
 
-		renderPlan(plan)
+		if err != nil {
+			return err
+		}
 
-		result, err := client.Apply(cmd.Context(), plan)
+		result, err := client.Apply(cmd.Context(), store, kinds)
 		if err != nil {
 			return err
 		}
@@ -36,9 +49,14 @@ var applyCmd = &cobra.Command{
 		)
 
 		printList("warnings", result.Warnings)
+		printList("errors", result.Errors)
 
 		if len(result.CreatedControls)+len(result.CreatedPolicies) > 0 {
-			fmt.Println("run 'courier pull' on a branch to write new IDs back to the workspace")
+			fmt.Println("run 'courier pull' to write new IDs back to the store")
+		}
+
+		if len(result.Errors) > 0 {
+			return fmt.Errorf("%w: %d records failed", ErrApplyIncomplete, len(result.Errors))
 		}
 
 		return nil
@@ -47,5 +65,7 @@ var applyCmd = &cobra.Command{
 
 // init registers the apply command
 func init() {
+	registerKindFlags(applyCmd.Flags())
+	applyCmd.Flags().StringVarP(&flagApplyFile, "file", "f", "", "path to a yaml file to apply, resolved to controls or policies by content")
 	rootCmd.AddCommand(applyCmd)
 }

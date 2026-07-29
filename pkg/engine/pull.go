@@ -2,7 +2,7 @@ package engine
 
 import "context"
 
-// PullResult summarizes what a pull wrote to the workspace
+// PullResult summarizes what a pull wrote to the store
 type PullResult struct {
 	// TotalControls is the number of organization controls exported
 	TotalControls int `json:"totalControls"`
@@ -14,30 +14,33 @@ type PullResult struct {
 	Removed []string `json:"removed,omitempty"`
 }
 
-// Pull exports all organization controls, mappings, and policies into the
-// workspace, rewriting files in canonical form and removing stale markdown
-func (c *Client) Pull(ctx context.Context, dir string) (*PullResult, error) {
-	state, err := c.FetchState(ctx)
+// Pull exports the selected kinds into the store, rewriting each kind's
+// files from the server's current state and removing stale documents
+func (c *Client) Pull(ctx context.Context, dir string, kinds []Kind) (*PullResult, error) {
+	state, err := c.FetchState(ctx, kinds)
 	if err != nil {
 		return nil, err
 	}
 
-	controls := BuildControls(state)
-
-	policies, markdown, err := BuildPolicies(state)
-	if err != nil {
-		return nil, err
+	result := &PullResult{
+		TotalControls: len(state.Controls),
+		TotalPolicies: len(state.Policies),
 	}
 
-	written, removed, err := WriteWorkspace(dir, controls, policies, markdown)
-	if err != nil {
-		return nil, err
+	for _, spec := range scoped(kinds) {
+		rendered, err := spec.build(state)
+		if err != nil {
+			return nil, err
+		}
+
+		written, removed, err := writeKindFiles(dir, rendered)
+		if err != nil {
+			return nil, err
+		}
+
+		result.Written = append(result.Written, written...)
+		result.Removed = append(result.Removed, removed...)
 	}
 
-	return &PullResult{
-		TotalControls: len(controls),
-		TotalPolicies: len(policies),
-		Written:       written,
-		Removed:       removed,
-	}, nil
+	return result, nil
 }

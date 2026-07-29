@@ -21,12 +21,6 @@
             "type": "string"
           },
           "type": "array"
-        },
-        "mappedControls": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
         }
       },
       "additionalProperties": false,

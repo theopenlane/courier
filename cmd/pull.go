@@ -6,17 +6,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// pullCmd exports Openlane records into the workspace
+// pullCmd exports Openlane records into the store
 var pullCmd = &cobra.Command{
 	Use:   "pull",
-	Short: "export organization controls, mappings, and policies into the workspace",
+	Short: "export organization controls, mappings, and policies into the store",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		client, settings, err := newClient()
 		if err != nil {
 			return err
 		}
 
-		result, err := client.Pull(cmd.Context(), settings.Dir)
+		result, err := client.Pull(cmd.Context(), settings.Dir, selectedKinds(cmd.Flags()))
 		if err != nil {
 			return err
 		}
@@ -26,7 +26,7 @@ var pullCmd = &cobra.Command{
 		printList("removed", result.Removed)
 
 		if len(result.Written)+len(result.Removed) == 0 {
-			fmt.Println("workspace already up to date")
+			fmt.Println("store already up to date")
 		}
 
 		return nil
@@ -35,5 +35,6 @@ var pullCmd = &cobra.Command{
 
 // init registers the pull command
 func init() {
+	registerKindFlags(pullCmd.Flags())
 	rootCmd.AddCommand(pullCmd)
 }

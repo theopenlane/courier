@@ -13,7 +13,7 @@ const frontmatterDelimiter = "---"
 // MarshalPolicyMarkdown renders a policy markdown document: a YAML
 // frontmatter block followed by the body
 func MarshalPolicyMarkdown(fm Frontmatter, body string) ([]byte, error) {
-	header, err := yaml.Marshal(fm)
+	header, err := yaml.MarshalWithOptions(fm, yamlOptions...)
 	if err != nil {
 		return nil, err
 	}

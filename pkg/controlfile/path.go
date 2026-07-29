@@ -16,7 +16,7 @@ var (
 	repeatedDashes = regexp.MustCompile(`-{2,}`)
 )
 
-// PolicyMarkdownPath returns the canonical workspace-relative markdown path
+// PolicyMarkdownPath returns the canonical store-relative markdown path
 // for a policy name, e.g. policies/application-security-policy.md
 func PolicyMarkdownPath(name string) string {
 	return path.Join(PoliciesDir, slug(strings.ToLower(name))+MarkdownExtension)

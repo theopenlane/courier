@@ -11,7 +11,7 @@ import (
 // flagFmtCheck fails fmt instead of rewriting files when set
 var flagFmtCheck bool
 
-// fmtCmd normalizes the workspace yaml files into canonical form
+// fmtCmd normalizes the store yaml files into canonical form
 var fmtCmd = &cobra.Command{
 	Use:   "fmt",
 	Short: "normalize controls.yaml and policies.yaml into canonical form",

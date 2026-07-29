@@ -7,6 +7,8 @@ import (
 
 	"github.com/theopenlane/core/common/enums"
 	"github.com/theopenlane/go-client/graphclient"
+
+	"github.com/theopenlane/courier/pkg/controlfile"
 )
 
 // defaultPageSize is the number of records fetched per page
@@ -29,6 +31,8 @@ type RemoteControl struct {
 	Category string `json:"category"`
 	// Subcategory is the subcategory of the control
 	Subcategory string `json:"subcategory"`
+	// ReferenceFramework is the framework short name when the control derives from a standard
+	ReferenceFramework string `json:"referenceFramework"`
 	// Tags associated with the control
 	Tags []string `json:"tags"`
 }
@@ -39,6 +43,9 @@ type RemoteRef struct {
 	ID string `json:"id"`
 	// RefCode is the reference code of the referenced control
 	RefCode string `json:"refCode"`
+	// Framework is the short name of the framework the control derives from,
+	// empty for organization custom controls
+	Framework string `json:"framework"`
 }
 
 // RemoteMapping is a mapped-control record as it exists in the API, only the
@@ -60,6 +67,10 @@ type RemotePolicy struct {
 	Name string `json:"name"`
 	// KindName is the policy kind, e.g. Security, Operational
 	KindName *string `json:"internalPolicyKindName"`
+	// Status is the document status, e.g. PUBLISHED, DRAFT
+	Status string `json:"status"`
+	// Revision is the document revision, e.g. v1.0.0
+	Revision string `json:"revision"`
 	// Details is the stored policy body
 	Details *string `json:"details"`
 	// Tags associated with the policy
@@ -113,24 +124,47 @@ func organizationControlsWhere() *graphclient.ControlWhereInput {
 	}
 }
 
-// FetchState pulls all organization controls, mappings, and policies from the API
-func (c *Client) FetchState(ctx context.Context) (*RemoteState, error) {
+// FetchState pulls the remote state for the selected kinds from the API
+func (c *Client) FetchState(ctx context.Context, kinds []Kind) (*RemoteState, error) {
+	state := &RemoteState{}
+
+	for _, spec := range scoped(kinds) {
+		if err := spec.fetch(ctx, c, state); err != nil {
+			return nil, err
+		}
+	}
+
+	return state, nil
+}
+
+// fetchControlsKind retrieves organization controls and their mappings
+func fetchControlsKind(ctx context.Context, c *Client, state *RemoteState) error {
 	controls, err := c.fetchControls(ctx, organizationControlsWhere())
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	mappings, err := c.fetchMappings(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
+	state.Controls = controls
+	state.Mappings = mappings
+
+	return nil
+}
+
+// fetchPoliciesKind retrieves organization policies and their control references
+func fetchPoliciesKind(ctx context.Context, c *Client, state *RemoteState) error {
 	policies, err := c.fetchPolicies(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return &RemoteState{Controls: controls, Mappings: mappings, Policies: policies}, nil
+	state.Policies = policies
+
+	return nil
 }
 
 // fetchControls pages through the controls query with the given filter
@@ -146,13 +180,14 @@ func (c *Client) fetchControls(ctx context.Context, where *graphclient.ControlWh
 		for _, edge := range resp.Controls.Edges {
 			node := edge.GetNode()
 			controls = append(controls, RemoteControl{
-				ID:          node.ID,
-				RefCode:     node.RefCode,
-				Title:       lo.FromPtr(node.Title),
-				Description: lo.FromPtr(node.Description),
-				Category:    lo.FromPtr(node.Category),
-				Subcategory: lo.FromPtr(node.Subcategory),
-				Tags:        node.Tags,
+				ID:                 node.ID,
+				RefCode:            node.RefCode,
+				Title:              lo.FromPtr(node.Title),
+				Description:        lo.FromPtr(node.Description),
+				Category:           lo.FromPtr(node.Category),
+				Subcategory:        lo.FromPtr(node.Subcategory),
+				ReferenceFramework: lo.FromPtr(node.ReferenceFramework),
+				Tags:               node.Tags,
 			})
 		}
 
@@ -217,7 +252,7 @@ func (c *Client) mappedFromControls(ctx context.Context, mappingID string) ([]Re
 
 		for _, edge := range resp.MappedControl.FromControls.Edges {
 			node := edge.GetNode()
-			refs = append(refs, RemoteRef{ID: node.ID, RefCode: node.RefCode})
+			refs = append(refs, RemoteRef{ID: node.ID, RefCode: node.RefCode, Framework: lo.FromPtr(node.ReferenceFramework)})
 		}
 
 		return &resp.MappedControl.FromControls.PageInfo, nil
@@ -238,7 +273,7 @@ func (c *Client) mappedToControls(ctx context.Context, mappingID string) ([]Remo
 
 		for _, edge := range resp.MappedControl.ToControls.Edges {
 			node := edge.GetNode()
-			refs = append(refs, RemoteRef{ID: node.ID, RefCode: node.RefCode})
+			refs = append(refs, RemoteRef{ID: node.ID, RefCode: node.RefCode, Framework: lo.FromPtr(node.ReferenceFramework)})
 		}
 
 		return &resp.MappedControl.ToControls.PageInfo, nil
@@ -262,10 +297,17 @@ func (c *Client) fetchPolicies(ctx context.Context) ([]RemotePolicy, error) {
 
 		for _, edge := range resp.InternalPolicies.Edges {
 			node := edge.GetNode()
+			status := ""
+			if node.Status != nil {
+				status = node.Status.String()
+			}
+
 			policies = append(policies, RemotePolicy{
 				ID:       node.ID,
 				Name:     node.Name,
 				KindName: node.InternalPolicyKindName,
+				Status:   status,
+				Revision: lo.FromPtr(node.Revision),
 				Details:  node.Details,
 				Tags:     node.Tags,
 			})
@@ -296,18 +338,28 @@ func (c *Client) policyControls(ctx context.Context, policyID string) ([]RemoteR
 	}
 
 	return lo.Map(controls, func(rc RemoteControl, _ int) RemoteRef {
-		return RemoteRef{ID: rc.ID, RefCode: rc.RefCode}
+		return RemoteRef{ID: rc.ID, RefCode: rc.RefCode, Framework: rc.ReferenceFramework}
 	}), nil
 }
 
-// ResolveControlRefCode resolves a mapped control refCode to a control ID via
-// a case-insensitive refCode match on org-owned controls, a missing control
-// returns an empty ID so callers can skip it, multiple matches are an error
-func (c *Client) ResolveControlRefCode(ctx context.Context, refCode string) (string, error) {
-	matches, err := c.fetchControls(ctx, &graphclient.ControlWhereInput{
+// resolveControlRefCode resolves a mapped control reference to a control ID
+// via a case-insensitive refCode match on org-owned controls, scoped to the
+// given framework short name or to controls without a framework when the
+// framework is the custom key. A missing control returns an empty ID so
+// callers can skip it, multiple matches are an error
+func (c *Client) resolveControlRefCode(ctx context.Context, framework, refCode string) (string, error) {
+	where := &graphclient.ControlWhereInput{
 		RefCodeEqualFold: &refCode,
 		OwnerIDNotNil:    new(true),
-	})
+	}
+
+	if framework == controlfile.CustomFrameworkKey {
+		where.ReferenceFrameworkIsNil = new(true)
+	} else {
+		where.ReferenceFrameworkEqualFold = &framework
+	}
+
+	matches, err := c.fetchControls(ctx, where)
 	if err != nil {
 		return "", err
 	}

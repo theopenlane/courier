@@ -1,33 +1,44 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 
+	"github.com/theopenlane/courier/pkg/controlfile"
 	"github.com/theopenlane/courier/pkg/engine"
 )
 
-// changesExitCode is the exit code returned by plan --detailed-exitcode when changes exist
-const changesExitCode = 2
+// findingsExitCode is the exit code returned by plan --detailed-exitcode when the preflight has findings
+const findingsExitCode = 2
 
 var (
-	// flagPlanJSON renders the plan as JSON
+	// flagPlanJSON renders the preflight as JSON
 	flagPlanJSON bool
-	// flagDetailedExit exits with changesExitCode when the plan contains changes
+	// flagDetailedExit exits with findingsExitCode when the preflight has findings
 	flagDetailedExit bool
 )
 
-// planCmd shows the changes apply would make to Openlane
+// planCmd preflights the files against Openlane without changing anything
 var planCmd = &cobra.Command{
 	Use:   "plan",
-	Short: "show the changes apply would make to Openlane",
+	Short: "preflight the files against Openlane without changing anything",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		_, plan, err := computePlan(cmd.Context())
+		client, settings, err := newClient()
+		if err != nil {
+			return err
+		}
+
+		store, err := engine.NewStore(settings.Dir)
+		if err != nil {
+			return err
+		}
+
+		plan, err := client.Plan(cmd.Context(), store, selectedKinds(cmd.Flags()))
 		if err != nil {
 			return err
 		}
@@ -43,8 +54,8 @@ var planCmd = &cobra.Command{
 			renderPlan(plan)
 		}
 
-		if flagDetailedExit && plan.HasChanges() {
-			os.Exit(changesExitCode)
+		if flagDetailedExit && plan.HasFindings() {
+			os.Exit(findingsExitCode)
 		}
 
 		return nil
@@ -53,104 +64,57 @@ var planCmd = &cobra.Command{
 
 // init registers the plan command
 func init() {
-	planCmd.Flags().BoolVar(&flagPlanJSON, "json", false, "output the plan as JSON")
-	planCmd.Flags().BoolVar(&flagDetailedExit, "detailed-exitcode", false, "exit with code 2 when the plan contains changes")
+	registerKindFlags(planCmd.Flags())
+	planCmd.Flags().BoolVar(&flagPlanJSON, "json", false, "output the preflight as JSON")
+	planCmd.Flags().BoolVar(&flagDetailedExit, "detailed-exitcode", false, "exit with code 2 when the preflight has findings")
 	rootCmd.AddCommand(planCmd)
 }
 
-// computePlan loads the workspace, fetches remote state, and diffs them
-func computePlan(ctx context.Context) (*engine.Client, *engine.Plan, error) {
-	client, settings, err := newClient()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	ws, err := engine.LoadWorkspace(settings.Dir)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	state, err := client.FetchState(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	plan, err := engine.ComputePlan(ws, state)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return client, plan, nil
-}
-
-// renderPlan prints a human readable plan
+// renderPlan prints the preflight findings
 func renderPlan(plan *engine.Plan) {
-	if !plan.HasChanges() {
-		fmt.Println("no changes, Openlane matches the workspace")
-	}
+	if !plan.HasFindings() {
+		fmt.Println("nothing to report, the files match Openlane")
 
-	for _, create := range plan.CreateControls {
-		fmt.Printf("+ create control %s\n", create.Doc.RefCode)
-	}
-
-	for _, update := range plan.UpdateControls {
-		fmt.Printf("~ update control %s\n", update.Doc.RefCode)
-		renderDiffs(update.Diffs)
-	}
-
-	for _, add := range plan.MappingAdds {
-		fmt.Printf("+ map control %s -> %s\n", add.RefCode, strings.Join(add.Targets, ", "))
-	}
-
-	for _, create := range plan.CreatePolicies {
-		fmt.Printf("+ create policy %s\n", create.Policy.Name)
-	}
-
-	for _, update := range plan.UpdatePolicies {
-		fmt.Printf("~ update policy %s\n", update.Policy.Name)
-		renderDiffs(update.Diffs)
-
-		if update.BodyChanged {
-			fmt.Println("    body: markdown differs from policy details")
-		}
-
-		if len(update.AddControls) > 0 {
-			fmt.Printf("    link controls: %s\n", strings.Join(update.AddControls, ", "))
-		}
-	}
-
-	renderDrift(plan)
-}
-
-// renderDrift prints records present in Openlane but not in the workspace
-func renderDrift(plan *engine.Plan) {
-	total := len(plan.DriftControls) + len(plan.DriftMappings) + len(plan.DriftPolicies) + len(plan.DriftPolicyControls)
-	if total == 0 {
 		return
 	}
 
-	fmt.Println("drift, present in Openlane but not in the workspace, apply never deletes:")
+	for _, refCode := range plan.CreateControls {
+		fmt.Printf("+ control %s will be created\n", refCode)
+	}
+
+	for _, name := range plan.CreatePolicies {
+		fmt.Printf("+ policy %s will be created\n", name)
+	}
+
+	for _, ref := range plan.UnresolvedRefs {
+		fmt.Printf("? %s does not resolve and will be skipped\n", ref)
+	}
+
+	total := len(plan.DriftControls) + len(plan.DriftMappings) + len(plan.DriftPolicies)
+	if total > 0 {
+		fmt.Println("in Openlane but not in the files, apply does not remove these:")
+	}
 
 	for _, rc := range plan.DriftControls {
 		fmt.Printf("  control %s (%s)\n", rc.RefCode, rc.ID)
 	}
 
-	for _, m := range plan.DriftMappings {
-		fmt.Printf("  mapping %s -> %s\n", m.RefCode, strings.Join(m.Targets, ", "))
+	if len(plan.DriftMappings) > 0 {
+		fmt.Printf("  mapped references: %s\n", renderGrouped(plan.DriftMappings))
 	}
 
 	for _, rp := range plan.DriftPolicies {
 		fmt.Printf("  policy %s (%s)\n", rp.Name, rp.ID)
 	}
-
-	for _, pd := range plan.DriftPolicyControls {
-		fmt.Printf("  policy %s linked controls: %s\n", pd.Name, strings.Join(pd.Targets, ", "))
-	}
 }
 
-// renderDiffs prints field-level changes indented under their parent line
-func renderDiffs(diffs []engine.FieldDiff) {
-	for _, diff := range diffs {
-		fmt.Printf("    %s: %q -> %q\n", diff.Field, diff.Old, diff.New)
-	}
+// renderGrouped renders framework-grouped control references for display
+func renderGrouped(grouped controlfile.MappedControls) string {
+	frameworks := lo.Keys(grouped)
+
+	parts := lo.Map(frameworks, func(framework string, _ int) string {
+		return framework + ": " + strings.Join(grouped[framework], ", ")
+	})
+
+	return strings.Join(parts, "; ")
 }

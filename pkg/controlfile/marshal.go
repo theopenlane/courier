@@ -4,37 +4,23 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
-// marshalList serializes a list to YAML without modifying the data
-func marshalList[T any](items []*T) ([]byte, error) {
-	return yaml.Marshal(items)
+// yamlIndent is the indentation width for rendered YAML
+const yamlIndent = 2
+
+// yamlOptions render nested sequences indented under their key
+var yamlOptions = []yaml.EncodeOption{yaml.Indent(yamlIndent), yaml.IndentSequence(true)}
+
+// Marshal serializes a document list to YAML without modifying the data
+func Marshal[T any](items []*T) ([]byte, error) {
+	return yaml.MarshalWithOptions(items, yamlOptions...)
 }
 
-// unmarshalList parses a YAML list without validating it
-func unmarshalList[T any](data []byte) ([]*T, error) {
+// Unmarshal parses a YAML document list without validating it
+func Unmarshal[T any](data []byte) ([]*T, error) {
 	var items []*T
 	if err := yaml.Unmarshal(data, &items); err != nil {
 		return nil, err
 	}
 
 	return items, nil
-}
-
-// MarshalControls serializes the control inventory
-func MarshalControls(controls []*Control) ([]byte, error) {
-	return marshalList(controls)
-}
-
-// UnmarshalControls parses a controls.yaml inventory without validating it
-func UnmarshalControls(data []byte) ([]*Control, error) {
-	return unmarshalList[Control](data)
-}
-
-// MarshalPolicies serializes the policy manifest
-func MarshalPolicies(policies []*Policy) ([]byte, error) {
-	return marshalList(policies)
-}
-
-// UnmarshalPolicies parses a policies.yaml manifest without validating it
-func UnmarshalPolicies(data []byte) ([]*Policy, error) {
-	return unmarshalList[Policy](data)
 }

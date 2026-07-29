@@ -29,10 +29,7 @@
           "type": "array"
         },
         "mappedControls": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "$ref": "#/$defs/MappedControls"
         }
       },
       "additionalProperties": false,
@@ -40,6 +37,15 @@
       "required": [
         "refCode"
       ]
+    },
+    "MappedControls": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "type": "object"
     }
   },
   "items": {

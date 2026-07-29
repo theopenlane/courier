@@ -40,8 +40,6 @@ func NewClient(config Config) (*Client, error) {
 		)
 	}
 
-	opts = append(opts, openlane.WithInterceptors(openlane.WithLoggingInterceptor()))
-
 	typed, err := openlane.New(opts...)
 	if err != nil {
 		return nil, err

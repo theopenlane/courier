@@ -1,21 +1,21 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"path"
-	"strings"
+	"os"
+	"path/filepath"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/samber/lo"
 
 	"github.com/theopenlane/core/common/enums"
+	"github.com/theopenlane/core/pkg/logx"
+	"github.com/theopenlane/core/pkg/objects/storage"
 	"github.com/theopenlane/go-client/graphclient"
-)
 
-// markdownContentType is the content type used for policy uploads
-const markdownContentType = "text/markdown"
+	"github.com/theopenlane/courier/pkg/controlfile"
+)
 
 // ApplyResult summarizes what an apply changed in the API
 type ApplyResult struct {
@@ -32,75 +32,129 @@ type ApplyResult struct {
 	// Warnings are non-fatal issues such as mapped control refCodes that
 	// could not be resolved and were skipped
 	Warnings []string `json:"warnings,omitempty"`
+	// Errors are per-record failures, the run continues past them so one
+	// rejected record does not abort the batch
+	Errors []string `json:"errors,omitempty"`
 }
 
-// Apply executes a plan against the API: controls first so mapped control
-// references to new controls resolve, then mappings, then policies, nothing
-// is ever deleted
-func (c *Client) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) {
-	result := &ApplyResult{}
-	resolved := map[string]string{}
+// recordError logs a per-record failure and adds it to the run's results
+func (s *applyState) recordError(ctx context.Context, err error) {
+	logx.FromContext(ctx).Error().Err(err).Msg("record failed, continuing")
 
-	for _, create := range plan.CreateControls {
-		created, err := c.applyControlCreate(ctx, plan, create)
-		if err != nil {
-			return result, fmt.Errorf("creating control %q: %w", create.Doc.RefCode, err)
-		}
-
-		if created {
-			result.CreatedControls = append(result.CreatedControls, create.Doc.RefCode)
-		} else {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("control %q already exists, skipped create", create.Doc.RefCode))
-		}
-	}
-
-	for _, update := range plan.UpdateControls {
-		if err := c.applyControlUpdate(ctx, update); err != nil {
-			return result, fmt.Errorf("updating control %q: %w", update.Doc.RefCode, err)
-		}
-
-		result.UpdatedControls = append(result.UpdatedControls, update.Doc.RefCode)
-	}
-
-	for _, add := range plan.MappingAdds {
-		created, err := c.applyMappingAdd(ctx, plan, add, resolved, result)
-		if err != nil {
-			return result, fmt.Errorf("mapping control %q: %w", add.RefCode, err)
-		}
-
-		if created {
-			result.CreatedMappings++
-		}
-	}
-
-	for _, create := range plan.CreatePolicies {
-		created, err := c.applyPolicyCreate(ctx, plan, create, resolved, result)
-		if err != nil {
-			return result, fmt.Errorf("creating policy %q: %w", create.Policy.Name, err)
-		}
-
-		if created {
-			result.CreatedPolicies = append(result.CreatedPolicies, create.Policy.Name)
-		} else {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("policy %q already exists, skipped create", create.Policy.Name))
-		}
-	}
-
-	for _, update := range plan.UpdatePolicies {
-		if err := c.applyPolicyUpdate(ctx, plan, update, resolved, result); err != nil {
-			return result, fmt.Errorf("updating policy %q: %w", update.Policy.Name, err)
-		}
-
-		result.UpdatedPolicies = append(result.UpdatedPolicies, update.Policy.Name)
-	}
-
-	return result, nil
+	s.result.Errors = append(s.result.Errors, err.Error())
 }
 
-// applyControlCreate creates a control and records its new ID for later
-// mapped control resolution, an already existing control is skipped
-func (c *Client) applyControlCreate(ctx context.Context, plan *Plan, create ControlCreate) (bool, error) {
-	doc := create.Doc
+// applyState carries the per-run caches shared across kinds
+type applyState struct {
+	store *Store
+	// localIDs maps store refCodes to control IDs, extended as creates and
+	// lookups resolve them
+	localIDs map[string]string
+	// resolved caches framework-scoped refCode lookups
+	resolved map[string]string
+	result   *ApplyResult
+}
+
+// Apply pushes the store files through the API for the selected
+// kinds in registry order. Records with an ID update directly, records
+// without one are looked up individually and created when absent, nothing is
+// ever deleted and no state is fetched up front
+func (c *Client) Apply(ctx context.Context, store *Store, kinds []Kind) (*ApplyResult, error) {
+	controlfile.NormalizePolicies(store.Policies)
+
+	if err := controlfile.Validate(store.Controls); err != nil {
+		return nil, err
+	}
+
+	if err := controlfile.Validate(store.Policies); err != nil {
+		return nil, err
+	}
+
+	state := &applyState{
+		store:    store,
+		localIDs: map[string]string{},
+		resolved: map[string]string{},
+		result:   &ApplyResult{},
+	}
+
+	for _, spec := range scoped(kinds) {
+		if err := spec.apply(ctx, c, state); err != nil {
+			return state.result, err
+		}
+	}
+
+	return state.result, nil
+}
+
+// applyControlsKind upserts every control in the inventory and creates its
+// mappings, the server rejects duplicates so no state is fetched
+func applyControlsKind(ctx context.Context, c *Client, state *applyState) error {
+	for _, doc := range state.store.Controls {
+		if err := c.upsertControl(ctx, state, doc); err != nil {
+			state.recordError(ctx, fmt.Errorf("control %q: %w", doc.RefCode, err))
+		}
+	}
+
+	for _, doc := range state.store.Controls {
+		if len(doc.MappedControls) == 0 {
+			continue
+		}
+
+		created, err := c.createMapping(ctx, state, doc)
+		if err != nil {
+			state.recordError(ctx, fmt.Errorf("mapping control %q: %w", doc.RefCode, err))
+
+			continue
+		}
+
+		if created {
+			state.result.CreatedMappings++
+		}
+	}
+
+	return nil
+}
+
+// upsertControl updates a control by ID when known, otherwise checks for an
+// existing control by refCode and updates the match or creates the control
+func (c *Client) upsertControl(ctx context.Context, state *applyState, doc *controlfile.Control) error {
+	id := doc.ID
+	if id == "" {
+		// check for existing control first
+		existing, err := c.typed.GetControls(ctx, nil, nil, nil, nil, &graphclient.ControlWhereInput{
+			RefCode: &doc.RefCode,
+		}, nil)
+		if err == nil && len(existing.Controls.Edges) > 0 {
+			id = existing.Controls.Edges[0].GetNode().ID
+
+			logx.FromContext(ctx).Debug().Str("ref_code", doc.RefCode).Str("id", id).Msg("control already exists, updating")
+		}
+	}
+
+	if id != "" {
+		state.localIDs[doc.RefCode] = id
+
+		input := graphclient.UpdateControlInput{
+			Title:       lo.EmptyableToPtr(doc.Title),
+			Description: lo.EmptyableToPtr(doc.Description),
+			Category:    lo.EmptyableToPtr(doc.Category),
+			Subcategory: lo.EmptyableToPtr(doc.Subcategory),
+		}
+
+		if len(doc.Tags) > 0 {
+			input.Tags = doc.Tags
+		}
+
+		if _, err := c.typed.UpdateControl(ctx, id, input); err != nil {
+			return err
+		}
+
+		state.result.UpdatedControls = append(state.result.UpdatedControls, doc.RefCode)
+
+		logx.FromContext(ctx).Debug().Str("ref_code", doc.RefCode).Str("id", id).Msg("updated control")
+
+		return nil
+	}
 
 	input := graphclient.CreateControlInput{
 		RefCode:     doc.RefCode,
@@ -115,58 +169,40 @@ func (c *Client) applyControlCreate(ctx context.Context, plan *Plan, create Cont
 	resp, err := c.typed.CreateControl(ctx, input)
 	if err != nil {
 		if isAlreadyExists(err) {
-			return false, nil
+			logx.FromContext(ctx).Debug().Str("ref_code", doc.RefCode).Msg("control already exists, skipping create")
+
+			state.result.Warnings = append(state.result.Warnings, fmt.Sprintf("control %q already exists, skipped create", doc.RefCode))
+
+			return nil
 		}
 
-		return false, err
+		return err
 	}
 
 	doc.ID = resp.CreateControl.Control.ID
-	plan.localIDs[strings.ToLower(doc.RefCode)] = doc.ID
+	state.localIDs[doc.RefCode] = doc.ID
+	state.result.CreatedControls = append(state.result.CreatedControls, doc.RefCode)
 
-	return true, nil
+	logx.FromContext(ctx).Debug().Str("ref_code", doc.RefCode).Str("id", doc.ID).Msg("created control")
+
+	return nil
 }
 
-// applyControlUpdate sends the entry's fields, empty values are omitted and
-// never clear the corresponding API field
-func (c *Client) applyControlUpdate(ctx context.Context, update ControlUpdate) error {
-	doc := update.Doc
-
-	input := graphclient.UpdateControlInput{
-		Title:       lo.EmptyableToPtr(doc.Title),
-		Description: lo.EmptyableToPtr(doc.Description),
-		Category:    lo.EmptyableToPtr(doc.Category),
-		Subcategory: lo.EmptyableToPtr(doc.Subcategory),
-	}
-
-	if doc.RefCode != update.Remote.RefCode {
-		input.RefCode = &doc.RefCode
-	}
-
-	if len(doc.Tags) > 0 {
-		input.Tags = doc.Tags
-	}
-
-	_, err := c.typed.UpdateControl(ctx, update.Remote.ID, input)
-
-	return err
-}
-
-// applyMappingAdd creates one mapped control from the source control to every
-// resolvable target, unresolvable targets are skipped with a warning
-func (c *Client) applyMappingAdd(ctx context.Context, plan *Plan, add MappingAdd, resolved map[string]string, result *ApplyResult) (bool, error) {
-	controlID := add.ControlID
+// createMapping creates one mapped control from the control to every
+// resolvable target, the server rejects duplicate mappings
+func (c *Client) createMapping(ctx context.Context, state *applyState, doc *controlfile.Control) (bool, error) {
+	controlID := doc.ID
 	if controlID == "" {
-		controlID = plan.localIDs[strings.ToLower(add.RefCode)]
+		controlID = state.localIDs[doc.RefCode]
 	}
 
 	if controlID == "" {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("control %q has no ID, skipping its mappings", add.RefCode))
+		state.result.Warnings = append(state.result.Warnings, fmt.Sprintf("control %q has no ID, skipping its mappings", doc.RefCode))
 
 		return false, nil
 	}
 
-	toIDs, err := c.resolveTargets(ctx, add.Targets, plan, resolved, result)
+	toIDs, err := c.resolveTargets(ctx, state, doc.MappedControls)
 	if err != nil {
 		return false, err
 	}
@@ -181,123 +217,194 @@ func (c *Client) applyMappingAdd(ctx context.Context, plan *Plan, add MappingAdd
 		Source:         &enums.MappingSourceImported,
 	}
 
-	_, err = c.typed.CreateMappedControl(ctx, input)
-
-	return err == nil, err
-}
-
-// applyPolicyCreate uploads the markdown document and links kind and
-// controls, an already existing policy is skipped
-func (c *Client) applyPolicyCreate(ctx context.Context, plan *Plan, create PolicyCreate, resolved map[string]string, result *ApplyResult) (bool, error) {
-	policy := create.Policy
-
-	var ownerID *string
-	if c.config.OrganizationID != "" {
-		ownerID = &c.config.OrganizationID
-	}
-
-	resp, err := c.typed.CreateUploadInternalPolicy(ctx, markdownUpload(policy.MarkdownPath, create.Markdown), ownerID)
-	if err != nil {
+	if _, err := c.typed.CreateMappedControl(ctx, input); err != nil {
 		if isAlreadyExists(err) {
+			logx.FromContext(ctx).Debug().Str("ref_code", doc.RefCode).Msg("mapping already exists, skipping")
+
 			return false, nil
 		}
 
 		return false, err
 	}
 
-	policy.ID = resp.CreateUploadInternalPolicy.InternalPolicy.ID
-
-	input := graphclient.UpdateInternalPolicyInput{
-		InternalPolicyKindName: lo.EmptyableToPtr(policy.PolicyType),
-	}
-
-	if input.AddControlIDs, err = c.resolveTargets(ctx, policy.MappedControls, plan, resolved, result); err != nil {
-		return false, err
-	}
-
-	if _, err = c.typed.UpdateInternalPolicy(ctx, policy.ID, input); err != nil {
-		return false, err
-	}
+	logx.FromContext(ctx).Debug().Str("ref_code", doc.RefCode).Msg("created mapping")
 
 	return true, nil
 }
 
-// applyPolicyUpdate sends the entry's metadata with empty values omitted,
-// re-uploads the markdown when the body changed, and links newly mapped
-// controls
-func (c *Client) applyPolicyUpdate(ctx context.Context, plan *Plan, update PolicyUpdate, resolved map[string]string, result *ApplyResult) error {
-	policy := update.Policy
+// applyPoliciesKind upserts every policy from its manifest entry and document
+func applyPoliciesKind(ctx context.Context, c *Client, state *applyState) error {
+	for _, policy := range state.store.Policies {
+		if err := c.upsertPolicy(ctx, state, policy); err != nil {
+			state.recordError(ctx, fmt.Errorf("policy %q: %w", policy.Name, err))
+		}
+	}
+
+	return nil
+}
+
+// upsertPolicy uploads the policy document against its ID when known,
+// otherwise creates the policy and links its metadata, identity comes from
+// the manifest or the document frontmatter
+func (c *Client) upsertPolicy(ctx context.Context, state *applyState, policy *controlfile.Policy) error {
+	_, fm, _, err := state.store.policyMarkdown(policy)
+	if err != nil {
+		return err
+	}
+
+	id := policy.ID
+	if id == "" {
+		id = fm.OpenlaneID
+	}
+
+	if id == "" {
+		logx.FromContext(ctx).Debug().Str("name", policy.Name).Msg("no id found for policy, creating new policy")
+	}
+
+	upload, err := documentUpload(state.store.Dir, policy.MarkdownPath)
+	if err != nil {
+		return err
+	}
 
 	input := graphclient.UpdateInternalPolicyInput{
 		Name:                   &policy.Name,
 		InternalPolicyKindName: lo.EmptyableToPtr(policy.PolicyType),
+		Revision:               lo.EmptyableToPtr(fm.Revision),
+	}
+
+	if fm.Status != "" {
+		input.Status = enums.ToDocumentStatus(fm.Status)
 	}
 
 	if len(policy.Tags) > 0 {
 		input.Tags = policy.Tags
 	}
 
-	var err error
-	if input.AddControlIDs, err = c.resolveTargets(ctx, update.AddControls, plan, resolved, result); err != nil {
+	if input.AddControlIDs, err = c.resolveTargets(ctx, state, fm.Satisfies); err != nil {
 		return err
 	}
 
-	if update.BodyChanged {
-		_, err = c.typed.UpdateInternalPolicyWithFile(ctx, update.Remote.ID, markdownUpload(policy.MarkdownPath, update.Markdown), input)
+	if id != "" {
+		if _, err := c.typed.UpdateInternalPolicyWithFile(ctx, id, *upload, input); err != nil {
+			return err
+		}
+
+		state.result.UpdatedPolicies = append(state.result.UpdatedPolicies, policy.Name)
+
+		logx.FromContext(ctx).Debug().Str("name", policy.Name).Str("id", id).Msg("updated policy")
+
+		return nil
+	}
+
+	var ownerID *string
+	if c.config.OrganizationID != "" {
+		ownerID = &c.config.OrganizationID
+	}
+
+	resp, err := c.typed.CreateUploadInternalPolicy(ctx, *upload, ownerID)
+	if err != nil {
+		if isAlreadyExists(err) {
+			state.result.Warnings = append(state.result.Warnings, fmt.Sprintf("policy %q already exists, skipped create", policy.Name))
+
+			return nil
+		}
 
 		return err
 	}
 
-	_, err = c.typed.UpdateInternalPolicy(ctx, update.Remote.ID, input)
+	policy.ID = resp.CreateUploadInternalPolicy.InternalPolicy.ID
 
-	return err
+	if _, err := c.typed.UpdateInternalPolicy(ctx, policy.ID, input); err != nil {
+		return err
+	}
+
+	state.result.CreatedPolicies = append(state.result.CreatedPolicies, policy.Name)
+
+	logx.FromContext(ctx).Debug().Str("name", policy.Name).Str("id", policy.ID).Msg("created policy, updating document with frontmatter")
+
+	// write the assigned id back into the document frontmatter so the next
+	// apply updates by id instead of creating a duplicate, policy names are
+	// not unique so there is no lookup fallback
+	return writeFrontmatterID(state.store, policy)
 }
 
-// resolveTargets resolves mapped control refCodes to IDs using workspace
-// controls first and an API lookup otherwise, unresolvable refCodes are
+// writeFrontmatterID rewrites a policy document with its assigned openlane id
+func writeFrontmatterID(store *Store, policy *controlfile.Policy) error {
+	_, fm, body, err := store.policyMarkdown(policy)
+	if err != nil {
+		return err
+	}
+
+	fm.OpenlaneID = policy.ID
+
+	doc, err := controlfile.MarshalPolicyMarkdown(fm, body)
+	if err != nil {
+		return err
+	}
+
+	path := filepath.Join(store.Dir, filepath.FromSlash(policy.MarkdownPath))
+
+	return os.WriteFile(path, doc, filePerm)
+}
+
+// resolveTargets resolves framework-grouped control references to IDs,
+// custom references resolve against store controls first, framework
+// references resolve via a targeted lookup, unresolvable references are
 // skipped with a warning
-func (c *Client) resolveTargets(ctx context.Context, targets []string, plan *Plan, resolved map[string]string, result *ApplyResult) ([]string, error) {
-	ids := make([]string, 0, len(targets))
+func (c *Client) resolveTargets(ctx context.Context, state *applyState, targets controlfile.MappedControls) ([]string, error) {
+	var ids []string
 
-	for _, target := range targets {
-		key := strings.ToLower(target)
+	for framework, codes := range targets {
+		for _, code := range codes {
+			key := framework + "::" + code
 
-		if id, ok := plan.localIDs[key]; ok && id != "" {
-			ids = append(ids, id)
+			if framework == controlfile.CustomFrameworkKey {
+				if id, ok := state.localIDs[code]; ok && id != "" {
+					ids = append(ids, id)
 
-			continue
-		}
-
-		id, ok := resolved[key]
-		if !ok {
-			var err error
-
-			id, err = c.ResolveControlRefCode(ctx, target)
-			if err != nil {
-				return nil, err
+					continue
+				}
 			}
 
-			resolved[key] = id
+			id, ok := state.resolved[key]
+			if !ok {
+				var err error
+
+				id, err = c.resolveControlRefCode(ctx, framework, code)
+				if err != nil {
+					return nil, err
+				}
+
+				state.resolved[key] = id
+			}
+
+			if id == "" {
+				logx.FromContext(ctx).Debug().Str("ref_code", code).Str("framework", framework).Msg("control not found, skipping mapping target")
+
+				state.result.Warnings = append(state.result.Warnings, fmt.Sprintf("control %q not found in %q, skipping mapping target", code, framework))
+
+				continue
+			}
+
+			ids = append(ids, id)
 		}
-
-		if id == "" {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("control %q not found, skipping mapping target", target))
-
-			continue
-		}
-
-		ids = append(ids, id)
 	}
 
 	return ids, nil
 }
 
-// markdownUpload wraps a markdown document as a GraphQL upload
-func markdownUpload(relPath string, data []byte) graphql.Upload {
-	return graphql.Upload{
-		File:        bytes.NewReader(data),
-		Filename:    path.Base(relPath),
-		Size:        int64(len(data)),
-		ContentType: markdownContentType,
+// documentUpload builds a GraphQL upload from a store document using the
+// same file construction as the openlane CLI
+func documentUpload(dir, relPath string) (*graphql.Upload, error) {
+	file, err := storage.NewUploadFile(filepath.Join(dir, filepath.FromSlash(relPath)))
+	if err != nil {
+		return nil, err
 	}
+
+	return &graphql.Upload{
+		File:        file.RawFile,
+		Filename:    file.OriginalName,
+		Size:        file.Size,
+		ContentType: file.ContentType,
+	}, nil
 }

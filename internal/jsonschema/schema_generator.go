@@ -74,7 +74,7 @@ func main() {
 	}
 }
 
-// writeDocumentSchema writes the JSON schema for a workspace document type,
+// writeDocumentSchema writes the JSON schema for a store document type,
 // reflected through the same jsonx reflector used for runtime validation so
 // the published schema matches what apply enforces
 func writeDocumentSchema[T any](path string) error {
