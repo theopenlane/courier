@@ -12,10 +12,7 @@ import (
 )
 
 // defaultPageSize is the number of records fetched per page
-const defaultPageSize = 100
-
-// pageSize is the page size passed to paginated queries
-var pageSize = int64(defaultPageSize)
+const defaultPageSize = int64(100)
 
 // RemoteControl is the authorable view of a control as it exists in the API
 type RemoteControl struct {
@@ -37,25 +34,32 @@ type RemoteControl struct {
 	Tags []string `json:"tags"`
 }
 
-// RemoteRef identifies a control participating in a mapping or policy edge
+// RemoteRef identifies a control or subcontrol participating in a mapping or
+// policy edge
 type RemoteRef struct {
-	// ID is the Openlane ULID of the referenced control
+	// ID is the Openlane ULID of the referenced record
 	ID string `json:"id"`
-	// RefCode is the reference code of the referenced control
+	// RefCode is the reference code of the referenced record
 	RefCode string `json:"refCode"`
-	// Framework is the short name of the framework the control derives from,
+	// Framework is the short name of the framework the record derives from,
 	// empty for organization custom controls
 	Framework string `json:"framework"`
+	// Subcontrol reports whether the reference is a subcontrol rather than a
+	// control, the two live in separate edge sets on a mapping
+	Subcontrol bool `json:"subcontrol,omitempty"`
 }
 
-// RemoteMapping is a mapped-control record as it exists in the API, only the
-// participant edges are needed to derive mappedControls lists
+// RemoteMapping is a mapped-control record as it exists in the API, the
+// participant edges derive mappedControls lists and the source identifies the
+// records courier owns and may edit in place
 type RemoteMapping struct {
 	// ID is the Openlane ULID of the mapped control record
 	ID string `json:"id"`
-	// From are the controls on the from side of the mapping
+	// Source is how the mapping was created, courier owns the imported ones
+	Source string `json:"source"`
+	// From are the controls and subcontrols on the from side of the mapping
 	From []RemoteRef `json:"from"`
-	// To are the controls on the to side of the mapping
+	// To are the controls and subcontrols on the to side of the mapping
 	To []RemoteRef `json:"to"`
 }
 
@@ -79,11 +83,22 @@ type RemotePolicy struct {
 	Controls []RemoteRef `json:"controls"`
 }
 
+// RemoteSubcontrol is a subcontrol as it exists in the API, it carries the
+// same authorable fields as a control plus the control it belongs to
+type RemoteSubcontrol struct {
+	// RemoteControl holds the fields a subcontrol shares with a control
+	RemoteControl
+	// ControlID is the Openlane ULID of the parent control
+	ControlID string `json:"controlID"`
+}
+
 // RemoteState is the full set of organization controls, mappings, and
 // policies pulled from the API
 type RemoteState struct {
 	// Controls are the organization-owned controls not derived from a framework
 	Controls []RemoteControl
+	// Subcontrols are the organization-owned subcontrols of those controls
+	Subcontrols []RemoteSubcontrol
 	// Mappings are the organization-owned mapped-control records
 	Mappings []RemoteMapping
 	// Policies are the organization-owned internal policies
@@ -111,16 +126,25 @@ func paginate[P pager](fetch func(after *string) (P, error)) error {
 			return nil
 		}
 
-		after = page.GetEndCursor()
+		next := page.GetEndCursor()
+		if next == nil || (after != nil && *next == *after) {
+			return ErrPaginationStalled
+		}
+
+		after = next
 	}
 }
 
 // organizationControlsWhere selects org-owned controls that are user
-// manageable, framework-derived and system-owned controls are excluded
+// manageable, framework-derived and system-owned controls are excluded.
+// Framework clones reject writes to the fields courier manages and the global
+// catalog rejects writes outright, so both are filtered here rather than
+// discovered as a per-record failure
 func organizationControlsWhere() *graphclient.ControlWhereInput {
 	return &graphclient.ControlWhereInput{
-		SourceNotIn: []enums.ControlSource{enums.ControlSourceFramework},
-		SystemOwned: new(false),
+		SourceNotIn:   []enums.ControlSource{enums.ControlSourceFramework},
+		SystemOwned:   new(false),
+		OwnerIDNotNil: new(true),
 	}
 }
 
@@ -137,9 +161,15 @@ func (c *Client) FetchState(ctx context.Context, kinds []Kind) (*RemoteState, er
 	return state, nil
 }
 
-// fetchControlsKind retrieves organization controls and their mappings
+// fetchControlsKind retrieves organization controls, their subcontrols, and
+// the mappings both participate in
 func fetchControlsKind(ctx context.Context, c *Client, state *RemoteState) error {
 	controls, err := c.fetchControls(ctx, organizationControlsWhere())
+	if err != nil {
+		return err
+	}
+
+	subcontrols, err := c.fetchSubcontrols(ctx)
 	if err != nil {
 		return err
 	}
@@ -150,9 +180,50 @@ func fetchControlsKind(ctx context.Context, c *Client, state *RemoteState) error
 	}
 
 	state.Controls = controls
+	state.Subcontrols = subcontrols
 	state.Mappings = mappings
 
 	return nil
+}
+
+// fetchSubcontrols pages through the organization-owned subcontrols that are
+// user manageable, scoped the same way controls are
+func (c *Client) fetchSubcontrols(ctx context.Context) ([]RemoteSubcontrol, error) {
+	var subcontrols []RemoteSubcontrol
+
+	where := &graphclient.SubcontrolWhereInput{
+		SourceNotIn:   []enums.ControlSource{enums.ControlSourceFramework},
+		SystemOwned:   new(false),
+		OwnerIDNotNil: new(true),
+	}
+
+	err := paginate(func(after *string) (*graphclient.GetSubcontrols_Subcontrols_PageInfo, error) {
+		resp, err := c.typed.GetSubcontrols(ctx, new(defaultPageSize), nil, after, nil, where, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, edge := range resp.Subcontrols.Edges {
+			node := edge.GetNode()
+			subcontrols = append(subcontrols, RemoteSubcontrol{
+				RemoteControl: RemoteControl{
+					ID:                 node.ID,
+					RefCode:            node.RefCode,
+					Title:              lo.FromPtr(node.Title),
+					Description:        lo.FromPtr(node.Description),
+					Category:           lo.FromPtr(node.Category),
+					Subcategory:        lo.FromPtr(node.Subcategory),
+					ReferenceFramework: lo.FromPtr(node.ReferenceFramework),
+					Tags:               node.Tags,
+				},
+				ControlID: node.ControlID,
+			})
+		}
+
+		return &resp.Subcontrols.PageInfo, nil
+	})
+
+	return subcontrols, err
 }
 
 // fetchPoliciesKind retrieves organization policies and their control references
@@ -172,7 +243,7 @@ func (c *Client) fetchControls(ctx context.Context, where *graphclient.ControlWh
 	var controls []RemoteControl
 
 	err := paginate(func(after *string) (*graphclient.GetControls_Controls_PageInfo, error) {
-		resp, err := c.typed.GetControls(ctx, &pageSize, nil, after, nil, where, nil)
+		resp, err := c.typed.GetControls(ctx, new(defaultPageSize), nil, after, nil, where, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -201,18 +272,25 @@ func (c *Client) fetchControls(ctx context.Context, where *graphclient.ControlWh
 // participant edges of each mapping are paginated separately via the per-ID
 // queries so large mappings are never truncated
 func (c *Client) fetchMappings(ctx context.Context) ([]RemoteMapping, error) {
+	sources := map[string]string{}
+
 	var ids []string
 
 	where := &graphclient.MappedControlWhereInput{SystemOwned: new(false)}
 
 	err := paginate(func(after *string) (*graphclient.GetMappedControls_MappedControls_PageInfo, error) {
-		resp, err := c.typed.GetMappedControls(ctx, &pageSize, nil, after, nil, where, nil)
+		resp, err := c.typed.GetMappedControls(ctx, new(defaultPageSize), nil, after, nil, where, nil)
 		if err != nil {
 			return nil, err
 		}
 
 		for _, edge := range resp.MappedControls.Edges {
-			ids = append(ids, edge.GetNode().ID)
+			node := edge.GetNode()
+			ids = append(ids, node.ID)
+
+			if node.Source != nil {
+				sources[node.ID] = node.Source.String()
+			}
 		}
 
 		return &resp.MappedControls.PageInfo, nil
@@ -229,15 +307,82 @@ func (c *Client) fetchMappings(ctx context.Context) ([]RemoteMapping, error) {
 			return nil, err
 		}
 
+		fromSubs, err := c.mappedFromSubcontrols(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+
 		to, err := c.mappedToControls(ctx, id)
 		if err != nil {
 			return nil, err
 		}
 
-		mappings = append(mappings, RemoteMapping{ID: id, From: from, To: to})
+		toSubs, err := c.mappedToSubcontrols(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+
+		mappings = append(mappings, RemoteMapping{
+			ID:     id,
+			Source: sources[id],
+			From:   append(from, fromSubs...),
+			To:     append(to, toSubs...),
+		})
 	}
 
 	return mappings, nil
+}
+
+// mappedFromSubcontrols pages through the from-side subcontrols of a mapping
+func (c *Client) mappedFromSubcontrols(ctx context.Context, mappingID string) ([]RemoteRef, error) {
+	var refs []RemoteRef
+
+	err := paginate(func(after *string) (*graphclient.GetMappedAllFromSubcontrolsForID_MappedControl_FromSubcontrols_PageInfo, error) {
+		resp, err := c.typed.GetMappedAllFromSubcontrolsForID(ctx, mappingID, new(defaultPageSize), nil, after, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, edge := range resp.MappedControl.FromSubcontrols.Edges {
+			node := edge.GetNode()
+			refs = append(refs, RemoteRef{
+				ID:         node.ID,
+				RefCode:    node.RefCode,
+				Framework:  lo.FromPtr(node.ReferenceFramework),
+				Subcontrol: true,
+			})
+		}
+
+		return &resp.MappedControl.FromSubcontrols.PageInfo, nil
+	})
+
+	return refs, err
+}
+
+// mappedToSubcontrols pages through the to-side subcontrols of a mapping
+func (c *Client) mappedToSubcontrols(ctx context.Context, mappingID string) ([]RemoteRef, error) {
+	var refs []RemoteRef
+
+	err := paginate(func(after *string) (*graphclient.GetMappedAllToSubcontrolsForID_MappedControl_ToSubcontrols_PageInfo, error) {
+		resp, err := c.typed.GetMappedAllToSubcontrolsForID(ctx, mappingID, new(defaultPageSize), nil, after, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, edge := range resp.MappedControl.ToSubcontrols.Edges {
+			node := edge.GetNode()
+			refs = append(refs, RemoteRef{
+				ID:         node.ID,
+				RefCode:    node.RefCode,
+				Framework:  lo.FromPtr(node.ReferenceFramework),
+				Subcontrol: true,
+			})
+		}
+
+		return &resp.MappedControl.ToSubcontrols.PageInfo, nil
+	})
+
+	return refs, err
 }
 
 // mappedFromControls pages through the from-side controls of a mapping
@@ -245,7 +390,7 @@ func (c *Client) mappedFromControls(ctx context.Context, mappingID string) ([]Re
 	var refs []RemoteRef
 
 	err := paginate(func(after *string) (*graphclient.GetMappedAllFromControlsForID_MappedControl_FromControls_PageInfo, error) {
-		resp, err := c.typed.GetMappedAllFromControlsForID(ctx, mappingID, &pageSize, nil, after, nil, nil)
+		resp, err := c.typed.GetMappedAllFromControlsForID(ctx, mappingID, new(defaultPageSize), nil, after, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -266,7 +411,7 @@ func (c *Client) mappedToControls(ctx context.Context, mappingID string) ([]Remo
 	var refs []RemoteRef
 
 	err := paginate(func(after *string) (*graphclient.GetMappedAllToControlsForID_MappedControl_ToControls_PageInfo, error) {
-		resp, err := c.typed.GetMappedAllToControlsForID(ctx, mappingID, &pageSize, nil, after, nil, nil)
+		resp, err := c.typed.GetMappedAllToControlsForID(ctx, mappingID, new(defaultPageSize), nil, after, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -290,7 +435,7 @@ func (c *Client) fetchPolicies(ctx context.Context) ([]RemotePolicy, error) {
 	where := &graphclient.InternalPolicyWhereInput{SystemOwned: new(false)}
 
 	err := paginate(func(after *string) (*graphclient.GetInternalPolicies_InternalPolicies_PageInfo, error) {
-		resp, err := c.typed.GetInternalPolicies(ctx, &pageSize, nil, after, nil, where, nil)
+		resp, err := c.typed.GetInternalPolicies(ctx, new(defaultPageSize), nil, after, nil, where, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -340,6 +485,50 @@ func (c *Client) policyControls(ctx context.Context, policyID string) ([]RemoteR
 	return lo.Map(controls, func(rc RemoteControl, _ int) RemoteRef {
 		return RemoteRef{ID: rc.ID, RefCode: rc.RefCode, Framework: rc.ReferenceFramework}
 	}), nil
+}
+
+// resolveSubcontrolRefCode resolves a reference to a subcontrol ID the same
+// way resolveControlRefCode resolves controls, a reference that names neither
+// resolves to nothing and is skipped by the caller
+func (c *Client) resolveSubcontrolRefCode(ctx context.Context, framework, refCode string) (string, error) {
+	where := &graphclient.SubcontrolWhereInput{
+		RefCodeEqualFold: &refCode,
+		OwnerIDNotNil:    new(true),
+		SystemOwned:      new(false),
+	}
+
+	if framework == controlfile.CustomFrameworkKey {
+		where.ReferenceFrameworkIsNil = new(true)
+	} else {
+		where.ReferenceFrameworkEqualFold = &framework
+	}
+
+	var matches []string
+
+	err := paginate(func(after *string) (*graphclient.GetSubcontrols_Subcontrols_PageInfo, error) {
+		resp, err := c.typed.GetSubcontrols(ctx, new(defaultPageSize), nil, after, nil, where, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, edge := range resp.Subcontrols.Edges {
+			matches = append(matches, edge.GetNode().ID)
+		}
+
+		return &resp.Subcontrols.PageInfo, nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	switch len(matches) {
+	case 0:
+		return "", nil
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmtErr(ErrMultipleControlsFound, refCode)
+	}
 }
 
 // resolveControlRefCode resolves a mapped control reference to a control ID

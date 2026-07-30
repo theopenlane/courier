@@ -1,12 +1,19 @@
 package engine
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
+	"github.com/Yamashou/gqlgenc/clientv2"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vektah/gqlparser/v2/gqlerror"
+
+	"github.com/theopenlane/go-client/graphclient"
 
 	"github.com/theopenlane/courier/pkg/controlfile"
 )
@@ -170,6 +177,300 @@ func TestNewStoreMissingMarkdown(t *testing.T) {
 	assert.ErrorIs(t, err, ErrMissingMarkdown)
 }
 
+func TestNewStoreRejectsEscapingMarkdownPath(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "secret.env"), []byte("COURIER_TOKEN=shh\n"), filePerm))
+
+	dir := filepath.Join(root, "store")
+	require.NoError(t, os.MkdirAll(dir, dirPerm))
+
+	for _, markdownPath := range []string{"../secret.env", "/etc/passwd", "policies/../../secret.env"} {
+		manifest := "- name: Exfil\n  markdownPath: " + markdownPath + "\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, controlfile.PoliciesFile), []byte(manifest), filePerm))
+
+		_, err := NewStore(dir)
+		assert.ErrorIs(t, err, controlfile.ErrUnsafeMarkdownPath, markdownPath)
+	}
+
+	// a path inside the store that is not a markdown document is also rejected
+	manifest := "- name: Exfil\n  markdownPath: policies/secret.env\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, controlfile.PoliciesFile), []byte(manifest), filePerm))
+
+	_, err := NewStore(dir)
+	assert.ErrorIs(t, err, controlfile.ErrUnsafeMarkdownPath)
+}
+
+func TestNewStoreNullEntryIsAnError(t *testing.T) {
+	dir := t.TempDir()
+
+	// a trailing list dash yields a null entry, which must not dereference
+	require.NoError(t, os.WriteFile(filepath.Join(dir, controlfile.PoliciesFile), []byte("- name: A\n-\n"), filePerm))
+
+	_, err := NewStore(dir)
+	assert.ErrorIs(t, err, controlfile.ErrSchemaValidation)
+
+	require.NoError(t, os.Remove(filepath.Join(dir, controlfile.PoliciesFile)))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, controlfile.ControlsFile), []byte("- refCode: A\n-\n"), filePerm))
+
+	_, err = NewStore(dir)
+	assert.ErrorIs(t, err, controlfile.ErrSchemaValidation)
+}
+
+func TestNewStoreRejectsUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+
+	// a misspelled field must fail rather than silently drop the edit
+	require.NoError(t, os.WriteFile(filepath.Join(dir, controlfile.ControlsFile),
+		[]byte("- refCode: CC1.1\n  descriptionn: typo\n"), filePerm))
+
+	_, err := NewStore(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "descriptionn")
+}
+
+func TestBuildPoliciesDisambiguatesCollidingNames(t *testing.T) {
+	state := &RemoteState{
+		Policies: []RemotePolicy{
+			{ID: "PLC_1", Name: "Access Policy"},
+			{ID: "PLC_2", Name: "Access-Policy"},
+			{ID: "PLC_3", Name: "策略"},
+			{ID: "PLC_4", Name: "政策"},
+		},
+	}
+
+	policies, markdown, err := buildPolicies(state)
+	require.NoError(t, err)
+
+	// every policy gets its own document
+	assert.Len(t, markdown, len(state.Policies))
+
+	paths := lo.Map(policies, func(p *controlfile.Policy, _ int) string { return p.MarkdownPath })
+	assert.Len(t, lo.Uniq(paths), len(state.Policies))
+
+	// names that do not collide keep the plain derived path
+	solo, _, err := buildPolicies(&RemoteState{Policies: []RemotePolicy{{ID: "PLC_1", Name: "Access Policy"}}})
+	require.NoError(t, err)
+	assert.Equal(t, "policies/access-policy.md", solo[0].MarkdownPath)
+
+	// assignment does not depend on the order the API returned
+	reversed := &RemoteState{Policies: []RemotePolicy{
+		state.Policies[1], state.Policies[0], state.Policies[3], state.Policies[2],
+	}}
+
+	_, reversedMarkdown, err := buildPolicies(reversed)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, lo.Keys(markdown), lo.Keys(reversedMarkdown))
+}
+
+func TestChangedControlFields(t *testing.T) {
+	remote := remoteFixture().Controls[0]
+	doc := buildControls(remoteFixture())[0]
+
+	// a control straight from pull matches its record
+	assert.Empty(t, changedControlFields(doc, remote))
+
+	// an empty field is unmanaged, not a request to clear the value
+	doc.Title = ""
+	assert.Empty(t, changedControlFields(doc, remote))
+
+	// the changed fields are named so a dry run says what will be written
+	doc.Title = "New title"
+	doc.Category = "New category"
+	assert.Equal(t, []string{"title", "category"}, changedControlFields(doc, remote))
+
+	// a refCode rename on a matched control is an edit, not a new control
+	renamed := buildControls(remoteFixture())[0]
+	renamed.RefCode = "CC1.1.9"
+	assert.Equal(t, []string{"refCode"}, changedControlFields(renamed, remote))
+
+	// without an ID the refCode is the match key, so a difference means create
+	renamed.ID = ""
+	assert.Empty(t, changedControlFields(renamed, remote))
+
+	// tag order is not a change
+	tagged := &controlfile.Control{Tags: []string{"b", "a"}}
+	assert.Empty(t, changedControlFields(tagged, RemoteControl{Tags: []string{"a", "b"}}))
+	assert.Equal(t, []string{"tags"}, changedControlFields(tagged, RemoteControl{Tags: []string{"a"}}))
+
+	// a rich-text description compares against its plain text rendering
+	plain := &controlfile.Control{Description: "Hiring Managers evaluate all candidates."}
+	rich := RemoteControl{Description: `<div><span>Hiring Managers evaluate all candidates.</span></div>`}
+	assert.Empty(t, changedControlFields(plain, rich))
+}
+
+func TestChangedPolicyFields(t *testing.T) {
+	state := remoteFixture()
+	remote := state.Policies[0]
+
+	policies, markdown, err := buildPolicies(state)
+	require.NoError(t, err)
+
+	fm, body, err := controlfile.SplitPolicyMarkdown(markdown[policies[0].MarkdownPath])
+	require.NoError(t, err)
+
+	// a policy straight from pull matches its record
+	assert.Empty(t, changedPolicyFields(policies[0], fm, body, remote))
+
+	assert.Equal(t, []string{"body"}, changedPolicyFields(policies[0], fm, body+"\n\nnew paragraph", remote))
+
+	// a stored body that differs only by surrounding whitespace is not an edit,
+	// the store trims it on read so an untrimmed comparison never converges
+	padded := remote
+	padded.Details = new(" \n" + lo.FromPtr(remote.Details) + " \n\n\n")
+	assert.Empty(t, changedPolicyFields(policies[0], fm, body, padded))
+
+	// the server applies the frontmatter over the manifest, so a frontmatter
+	// edit must be detected rather than silently dropped
+	retagged := fm
+	retagged.Tags = append(slices.Clone(fm.Tags), "new-tag")
+	assert.Equal(t, []string{"tags"}, changedPolicyFields(policies[0], retagged, body, remote))
+
+	renamed := fm
+	renamed.Title = "Renamed In Frontmatter"
+	assert.Equal(t, []string{"name"}, changedPolicyFields(policies[0], renamed, body, remote))
+
+	// the server bumps revision after every write, so a revision-only
+	// difference must not trigger an update or apply never converges
+	edited := fm
+	edited.Revision = "v2.0.0"
+	assert.Empty(t, changedPolicyFields(policies[0], edited, body, remote))
+}
+
+func TestFlattenTargets(t *testing.T) {
+	// output is sorted so a dry run reads the same across runs
+	assert.Equal(t,
+		[]string{"ISO 27001: A.5.1", "SOC 2: CC1.1", "SOC 2: CC6.2"},
+		flattenTargets(controlfile.MappedControls{"SOC 2": {"CC6.2", "CC1.1"}, "ISO 27001": {"A.5.1"}}))
+
+	assert.Empty(t, flattenTargets(nil))
+}
+
+func TestMissingTargets(t *testing.T) {
+	existing := controlfile.MappedControls{"SOC 2": {"CC1.1", "CC6.2"}}
+
+	assert.Empty(t, missingTargets(controlfile.MappedControls{"SOC 2": {"CC1.1"}}, existing))
+
+	// refCodes resolve case-insensitively, so casing alone is not a new target
+	assert.Empty(t, missingTargets(controlfile.MappedControls{"SOC 2": {"cc1.1"}}, existing))
+
+	assert.Equal(t,
+		controlfile.MappedControls{"SOC 2": {"CC9.9"}},
+		missingTargets(controlfile.MappedControls{"SOC 2": {"CC1.1", "CC9.9"}}, existing))
+
+	// a framework with nothing mapped yet is entirely missing
+	assert.Equal(t,
+		controlfile.MappedControls{"ISO 27001": {"A.5.1"}},
+		missingTargets(controlfile.MappedControls{"ISO 27001": {"A.5.1"}}, existing))
+}
+
+func TestOwnedMappings(t *testing.T) {
+	state := &RemoteState{Mappings: []RemoteMapping{
+		{
+			ID:     "MPC_own",
+			Source: importedSource,
+			From:   []RemoteRef{{ID: "CTL_1"}},
+			To:     []RemoteRef{{RefCode: "CC1.1", Framework: "SOC 2"}},
+		},
+		{
+			ID:     "MPC_manual",
+			Source: "MANUAL",
+			From:   []RemoteRef{{ID: "CTL_1"}},
+			To:     []RemoteRef{{RefCode: "A.5.1", Framework: "ISO 27001"}},
+		},
+		{
+			ID:     "MPC_mixed",
+			Source: importedSource,
+			From:   []RemoteRef{{ID: "CTL_2"}},
+			To:     []RemoteRef{{RefCode: "CC1.1", Framework: "SOC 2"}, {RefCode: "A.5.1", Framework: "ISO 27001"}},
+		},
+	}}
+
+	owned := ownedMappings(state)
+
+	// courier extends the record it created for that control and framework
+	assert.Equal(t, "MPC_own", owned[mappingKey("CTL_1", "SOC 2")].id)
+	assert.Equal(t, []string{"CC1.1"}, owned[mappingKey("CTL_1", "SOC 2")].targets)
+
+	// records courier did not create are never edited
+	assert.NotContains(t, owned, mappingKey("CTL_1", "ISO 27001"))
+
+	// a record spanning frameworks is not one courier wrote, so it is left alone
+	assert.NotContains(t, owned, mappingKey("CTL_2", "SOC 2"))
+
+	// subcontrol targets group under their framework like controls do
+	subs := &RemoteState{Mappings: []RemoteMapping{{
+		ID:     "MPC_sub",
+		Source: importedSource,
+		From:   []RemoteRef{{ID: "CTL_3"}},
+		To:     []RemoteRef{{RefCode: "CC1.1-POF1", Framework: "SOC 2", Subcontrol: true}},
+	}}}
+
+	assert.Equal(t, "MPC_sub", ownedMappings(subs)[mappingKey("CTL_3", "SOC 2")].id)
+}
+
+func TestAddGroupedRefsIncludesSubcontrols(t *testing.T) {
+	grouped := controlfile.MappedControls{}
+	addGroupedRefs(grouped, []RemoteRef{
+		{RefCode: "CC1.1", Framework: "SOC 2"},
+		{RefCode: "CC1.1-POF1", Framework: "SOC 2", Subcontrol: true},
+		{RefCode: "OWN-1"},
+	})
+
+	// the file names a reference, apply resolves whether it is a subcontrol
+	assert.Equal(t, controlfile.MappedControls{
+		"SOC 2":                        {"CC1.1", "CC1.1-POF1"},
+		controlfile.CustomFrameworkKey: {"OWN-1"},
+	}, grouped)
+}
+
+func TestIsAlreadyExists(t *testing.T) {
+	coded := func(code string) error {
+		return &clientv2.ErrorResponse{GqlErrors: &gqlerror.List{
+			{Message: "control already exists in the system", Extensions: map[string]any{"code": code}},
+		}}
+	}
+
+	assert.True(t, isAlreadyExists(coded(alreadyExistsCode)))
+
+	// CONFLICT carries the same wording but is a real failure
+	assert.False(t, isAlreadyExists(coded("CONFLICT")))
+
+	assert.False(t, isAlreadyExists(nil))
+	assert.True(t, isAlreadyExists(errors.New("control already exists")))
+	assert.False(t, isAlreadyExists(errors.New("connection reset")))
+}
+
+func TestPaginateStalls(t *testing.T) {
+	// hasNextPage with no cursor must stop rather than refetch page one forever
+	calls := 0
+	err := paginate(func(_ *string) (*graphclient.GetControls_Controls_PageInfo, error) {
+		calls++
+
+		return &graphclient.GetControls_Controls_PageInfo{HasNextPage: true}, nil
+	})
+
+	assert.ErrorIs(t, err, ErrPaginationStalled)
+	assert.Equal(t, 1, calls)
+}
+
+func TestLoadSettingsDefaults(t *testing.T) {
+	settings, err := LoadSettings(filepath.Join(t.TempDir(), "absent.yaml"), nil)
+	assert.Error(t, err)
+
+	settings, err = LoadSettings("", nil)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultHost, settings.Host)
+	assert.Equal(t, DefaultDir, settings.Dir)
+}
+
+func TestNewClientRequiresHostAndToken(t *testing.T) {
+	_, err := NewClient(Config{Host: DefaultHost})
+	assert.ErrorIs(t, err, ErrMissingToken)
+
+	_, err = NewClient(Config{Token: "tolp_x"})
+	assert.ErrorIs(t, err, ErrMissingHost)
+}
+
 func TestLoadSettingsPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -256,17 +557,10 @@ func TestMatchRemote(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestMissingMappedRefs(t *testing.T) {
-	state := remoteFixture()
-	store := storeFromState(t, state)
+func TestMappedTargets(t *testing.T) {
+	targets := mappedTargets(remoteFixture())
 
-	// everything in the files, nothing missing
-	assert.Empty(t, missingMappedRefs(store, state))
-
-	// dropping the mapping from the files reports it as missing
-	for _, doc := range store.Controls {
-		doc.MappedControls = nil
-	}
-
-	assert.Equal(t, controlfile.MappedControls{"SOC 2": {"CC1.1"}}, missingMappedRefs(store, state))
+	// targets are the to side of every mapping the control is on the from side of
+	assert.Equal(t, controlfile.MappedControls{"SOC 2": {"CC1.1"}}, targets["CTL_custom1"])
+	assert.Empty(t, targets["CTL_custom2"])
 }

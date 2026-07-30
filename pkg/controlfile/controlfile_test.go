@@ -127,4 +127,36 @@ func TestPolicyMarkdownRoundTrip(t *testing.T) {
 
 func TestPolicyMarkdownPath(t *testing.T) {
 	assert.Equal(t, "policies/application-security-policy.md", controlfile.PolicyMarkdownPath("Application Security Policy"))
+
+	// names with no path-safe characters get a stable derived name rather than
+	// collapsing onto policies/.md
+	nonLatin := controlfile.PolicyMarkdownPath("策略")
+	assert.NotEqual(t, "policies/.md", nonLatin)
+	assert.Equal(t, nonLatin, controlfile.PolicyMarkdownPath("策略"))
+	assert.NotEqual(t, nonLatin, controlfile.PolicyMarkdownPath("政策"))
+
+	// traversal in a name cannot escape the policies directory
+	assert.Equal(t, "policies/etc-passwd.md", controlfile.PolicyMarkdownPath("../../etc/passwd"))
+
+	assert.Equal(t, "policies/access-policy-plc_1.md", controlfile.PolicyMarkdownPathWithID("Access Policy", "PLC_1"))
+}
+
+func TestValidateMarkdownPath(t *testing.T) {
+	require.NoError(t, controlfile.ValidateMarkdownPath("policies/access-policy.md"))
+	require.NoError(t, controlfile.ValidateMarkdownPath("nested/dir/access.MD"))
+
+	for _, bad := range []string{"../secret.env", "/etc/passwd", "policies/../../x.md", "policies/notes.txt", ""} {
+		assert.ErrorIs(t, controlfile.ValidateMarkdownPath(bad), controlfile.ErrUnsafeMarkdownPath, bad)
+	}
+}
+
+func TestUnmarshalRejectsUnknownFields(t *testing.T) {
+	_, err := controlfile.Unmarshal[controlfile.Control]([]byte("- refCode: A\n  descriptionn: typo\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "descriptionn")
+
+	// a controls file no longer parses as a policy manifest, so LoadFile can
+	// discriminate on content
+	_, err = controlfile.Unmarshal[controlfile.Policy]([]byte("- refCode: A\n  category: X\n"))
+	assert.Error(t, err)
 }

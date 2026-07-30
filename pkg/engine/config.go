@@ -20,16 +20,28 @@ const DefaultConfigFile = "./config/.config.yaml"
 // envPrefix is the prefix for environment variable overrides
 const envPrefix = "COURIER_"
 
+const (
+	// DefaultHost is the Openlane API host used when none is configured
+	DefaultHost = "https://api.theopenlane.io"
+	// DefaultDir is the store directory used when none is configured
+	DefaultDir = "./data"
+)
+
 // Settings are the connection and store settings for the binary
 type Settings struct {
 	// Host is the base URL of the Openlane API
-	Host string `koanf:"host" default:"https://api.theopenlane.io"`
+	Host string `koanf:"host"`
 	// Token is the API token used for authentication
-	Token string `koanf:"token" default:"" sensitive:"true"`
+	Token string `koanf:"token" sensitive:"true"`
 	// OrganizationID optionally scopes requests to a specific organization, only needed for multi-organization tokens
-	OrganizationID string `koanf:"organization-id" default:""`
+	OrganizationID string `koanf:"organization-id"`
 	// Dir is the directory holding the exported files
-	Dir string `koanf:"dir" default:"."`
+	Dir string `koanf:"dir"`
+}
+
+// DefaultSettings are the settings used before any source is merged in
+func DefaultSettings() Settings {
+	return Settings{Host: DefaultHost, Dir: DefaultDir}
 }
 
 // LoadSettings merges settings from the config file at path (DefaultConfigFile
@@ -70,7 +82,7 @@ func LoadSettings(path string, flags *pflag.FlagSet) (Settings, error) {
 		}
 	}
 
-	settings := Settings{}
+	settings := DefaultSettings()
 	if err := k.Unmarshal("", &settings); err != nil {
 		return Settings{}, err
 	}

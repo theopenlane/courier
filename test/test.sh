@@ -18,7 +18,7 @@ echo "==> courier version --short"
 echo "==> courier --help"
 "$BINARY" --help > /dev/null
 
-for cmd in pull fmt plan apply; do
+for cmd in pull fmt apply; do
     echo "==> courier $cmd --help"
     "$BINARY" "$cmd" --help > /dev/null
 done

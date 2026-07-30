@@ -44,6 +44,35 @@ type Control struct {
 	// MappedControls are the refCodes of controls this control maps to,
 	// grouped by framework short name, e.g. SOC 2 to CC1.1
 	MappedControls MappedControls `yaml:"mappedControls,omitempty" json:"mappedControls,omitempty"`
+	// Subcontrols are the controls nested under this one, they carry the same
+	// fields and are created against this control as their parent
+	Subcontrols []*Subcontrol `yaml:"subcontrols,omitempty" json:"subcontrols,omitempty"`
+}
+
+// Subcontrol is a control nested under an organization control, it holds the
+// same authorable fields and exists only in the context of its parent
+type Subcontrol struct {
+	// ID is the Openlane ULID of the subcontrol, empty until it has been created
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+	// RefCode is the unique reference code of the subcontrol within the organization
+	RefCode string `yaml:"refCode" json:"refCode" jsonschema:"required,minLength=1"`
+	// Title is the human readable title of the subcontrol, always rendered so
+	// missing values can be filled in directly
+	Title string `yaml:"title" json:"title,omitempty"`
+	// Description describes what the subcontrol is supposed to accomplish,
+	// always rendered so missing values can be filled in directly
+	Description string `yaml:"description" json:"description,omitempty"`
+	// Category is the category of the subcontrol, always rendered so missing
+	// values can be filled in directly
+	Category string `yaml:"category" json:"category,omitempty"`
+	// Subcategory is the subcategory of the subcontrol, always rendered so
+	// missing values can be filled in directly
+	Subcategory string `yaml:"subcategory" json:"subcategory,omitempty"`
+	// Tags associated with the subcontrol
+	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	// MappedControls are the refCodes of controls this subcontrol maps to,
+	// grouped by framework short name
+	MappedControls MappedControls `yaml:"mappedControls,omitempty" json:"mappedControls,omitempty"`
 }
 
 // Policy is a single internal policy in the manifest, its body lives in the

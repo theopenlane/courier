@@ -16,10 +16,10 @@
     },
     "dir": {
       "type": "string",
-      "description": "Dir is the workspace directory holding the exported files"
+      "description": "Dir is the directory holding the exported files"
     }
   },
   "additionalProperties": false,
   "type": "object",
-  "description": "Settings are the connection and workspace settings for the binary"
+  "description": "Settings are the connection and store settings for the binary"
 }

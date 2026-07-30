@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/invopop/jsonschema"
-	"github.com/mcuadros/go-defaults"
 	"github.com/theopenlane/core/pkg/jsonx"
 	"gopkg.in/yaml.v3"
 
@@ -48,14 +47,13 @@ func main() {
 		panic(err)
 	}
 
-	if err := os.WriteFile(jsonSchemaPath, data, ownerReadWrite); err != nil {
+	if err := writeFile(jsonSchemaPath, data); err != nil {
 		panic(err)
 	}
 
-	settings := &engine.Settings{}
-	defaults.SetDefaults(settings)
+	settings := engine.DefaultSettings()
 
-	entries := settingsEntries(settings, descriptions(schema))
+	entries := settingsEntries(&settings, descriptions(schema))
 
 	if err := writeYAMLExample(entries); err != nil {
 		panic(err)
@@ -83,7 +81,17 @@ func writeDocumentSchema[T any](path string) error {
 		return err
 	}
 
-	return os.WriteFile(path, buf.Bytes(), ownerReadWrite)
+	return writeFile(path, buf.Bytes())
+}
+
+// writeFile writes a generated artifact, ensuring the trailing newline the
+// end-of-file-fixer hook expects so regeneration is a no-op
+func writeFile(path string, data []byte) error {
+	if !bytes.HasSuffix(data, []byte("\n")) {
+		data = append(data, '\n')
+	}
+
+	return os.WriteFile(path, data, ownerReadWrite)
 }
 
 // entry is one configuration key with its default value and description
@@ -157,7 +165,7 @@ func writeYAMLExample(entries []entry) error {
 		return err
 	}
 
-	return os.WriteFile(yamlConfigPath, []byte(buf.String()), ownerReadWrite)
+	return writeFile(yamlConfigPath, []byte(buf.String()))
 }
 
 // writeEnvExample renders the example environment file, keys mirror the
@@ -172,5 +180,5 @@ func writeEnvExample(entries []entry) error {
 		fmt.Fprintf(&buf, "%s=%q\n", envKey, e.value)
 	}
 
-	return os.WriteFile(envConfigPath, []byte(buf.String()), ownerReadWrite)
+	return writeFile(envConfigPath, []byte(buf.String()))
 }

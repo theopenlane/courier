@@ -69,10 +69,25 @@ func LoadFile(path string) (*Store, []Kind, error) {
 	return nil, nil, fmtErr(ErrUnrecognizedFile, path)
 }
 
+// documentPath resolves a manifest markdownPath against the store, rejecting
+// paths that would reach outside it
+func documentPath(dir, rel string) (string, error) {
+	if err := controlfile.ValidateMarkdownPath(rel); err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, filepath.FromSlash(rel)), nil
+}
+
 // loadPolicyDocuments reads the markdown document for every manifest entry
 func loadPolicyDocuments(store *Store) error {
 	for _, policy := range store.Policies {
-		markdown, err := os.ReadFile(filepath.Join(store.Dir, filepath.FromSlash(policy.MarkdownPath)))
+		path, err := documentPath(store.Dir, policy.MarkdownPath)
+		if err != nil {
+			return err
+		}
+
+		markdown, err := os.ReadFile(path)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return fmtErr(ErrMissingMarkdown, policy.MarkdownPath)
@@ -112,6 +127,15 @@ func NewStore(dir string) (*Store, error) {
 		if store.Policies, err = controlfile.Unmarshal[controlfile.Policy](data); err != nil {
 			return nil, err
 		}
+	}
+
+	// validate before normalizing, which dereferences every entry
+	if err := controlfile.Validate(store.Controls); err != nil {
+		return nil, err
+	}
+
+	if err := controlfile.Validate(store.Policies); err != nil {
+		return nil, err
 	}
 
 	controlfile.NormalizePolicies(store.Policies)
@@ -206,20 +230,12 @@ type FormatResult struct {
 	Changed []string
 }
 
-// Format rewrites controls.yaml and policies.yaml into canonical form and
-// validates both, markdown documents are left untouched. With check set the
-// files are not rewritten
+// Format rewrites controls.yaml and policies.yaml into canonical form,
+// markdown documents are left untouched. With check set the files are not
+// rewritten
 func Format(dir string, check bool) (*FormatResult, error) {
 	store, err := NewStore(dir)
 	if err != nil {
-		return nil, err
-	}
-
-	if err := controlfile.Validate(store.Controls); err != nil {
-		return nil, err
-	}
-
-	if err := controlfile.Validate(store.Policies); err != nil {
 		return nil, err
 	}
 

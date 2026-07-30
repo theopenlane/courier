@@ -12,6 +12,9 @@ type PullResult struct {
 	Written []string `json:"written,omitempty"`
 	// Removed are the relative paths of stale documents deleted
 	Removed []string `json:"removed,omitempty"`
+	// Warnings are records the export could not represent, such as a
+	// subcontrol whose parent control is not itself exported
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Pull exports the selected kinds into the store, rewriting each kind's
@@ -40,6 +43,7 @@ func (c *Client) Pull(ctx context.Context, dir string, kinds []Kind) (*PullResul
 
 		result.Written = append(result.Written, written...)
 		result.Removed = append(result.Removed, removed...)
+		result.Warnings = append(result.Warnings, rendered.warnings...)
 	}
 
 	return result, nil

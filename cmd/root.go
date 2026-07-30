@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -15,9 +18,6 @@ import (
 // appName is the application name used in log lines
 const appName = "courier"
 
-// defaultHost is the Openlane API host used when none is configured
-const defaultHost = "https://api.theopenlane.io"
-
 // flagConfig is the path to an explicit config file
 var flagConfig string
 
@@ -29,12 +29,14 @@ var rootCmd = &cobra.Command{
 policies in sync with Openlane.
 
 pull exports controls.yaml, policies.yaml, and policy markdown documents,
-fmt normalizes the yaml files, plan shows what apply would change, and apply
-creates and updates records through the API, nothing is ever deleted.
+fmt normalizes the yaml files, and apply creates and updates records through
+the API, writing only what differs and never deleting anything. Run apply with
+--dry-run to see what it would change first.
 
 Settings merge from a config file (default config/.config.yaml), COURIER_-prefixed
 environment variables, and flags, later sources win.`,
-	SilenceUsage: true,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 		setupLogging(cmd.Flags())
 	},
@@ -61,18 +63,28 @@ func setupLogging(flags *pflag.FlagSet) {
 
 // Execute runs the root command and exits non-zero on error
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// run executes the root command under a context cancelled on interrupt, so a
+// long pull or apply stops between requests instead of being killed mid-write
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return rootCmd.ExecuteContext(ctx)
 }
 
 // init registers the persistent flags
 func init() {
 	rootCmd.PersistentFlags().StringVar(&flagConfig, "config", "", "path to a config file (default "+engine.DefaultConfigFile+")")
-	rootCmd.PersistentFlags().String("host", defaultHost, "Openlane API host")
+	rootCmd.PersistentFlags().String("host", engine.DefaultHost, "Openlane API host")
 	rootCmd.PersistentFlags().String("token", "", "Openlane API token")
 	rootCmd.PersistentFlags().String("organization-id", "", "organization ID header for multi-organization tokens")
-	rootCmd.PersistentFlags().String("dir", ".", "directory holding the exported files")
+	rootCmd.PersistentFlags().String("dir", engine.DefaultDir, "directory holding the exported files")
 	rootCmd.PersistentFlags().Bool("debug", false, "enable debug logging")
 	rootCmd.PersistentFlags().Bool("pretty", false, "enable pretty (human readable) logging output")
 }

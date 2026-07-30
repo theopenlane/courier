@@ -47,10 +47,13 @@ var markdownConverter = converter.NewConverter(
 // bodyToMarkdown renders a stored document body as markdown, rendered
 // rich-text HTML is scrubbed to semantic markup and converted, content
 // already authored as markdown passes through unchanged so the conversion is
-// deterministic and applied markdown round-trips verbatim
+// deterministic and applied markdown round-trips verbatim. Surrounding
+// whitespace is trimmed on both paths to match what reading the document back
+// out of the store yields, otherwise a body that differs only by a trailing
+// newline reads as an edit on every apply
 func bodyToMarkdown(body string) string {
 	if !htmlTagRegex.MatchString(body) {
-		return body
+		return strings.TrimSpace(body)
 	}
 
 	cleaned := scrub.Scrub(body)

@@ -20,13 +20,15 @@ const (
 type kindFiles struct {
 	// files maps store-relative paths to rendered content
 	files map[string][]byte
+	// warnings are records the kind could not represent in the store
+	warnings []string
 	// cleanup removes store files the kind owns that are no longer
 	// present in the rendered set, nil when the kind never removes files
 	cleanup func(dir string, files map[string][]byte) ([]string, error)
 }
 
-// kindSpec wires one object kind into the pull, plan, and apply phases,
-// adding a new syncable object means adding one spec to the registry
+// kindSpec wires one object kind into the pull and apply phases, adding a new
+// syncable object means adding one spec to the registry
 type kindSpec struct {
 	// kind is the name used by the only flag to scope operations
 	kind Kind
@@ -34,8 +36,6 @@ type kindSpec struct {
 	fetch func(ctx context.Context, c *Client, state *RemoteState) error
 	// build renders the kind's store files from remote state
 	build func(state *RemoteState) (kindFiles, error)
-	// plan preflights the files against remote state
-	plan func(ctx context.Context, c *Client, plan *Plan, store *Store, state *RemoteState, resolved map[string]string) error
 	// apply pushes the kind's store entries through the API
 	apply func(ctx context.Context, c *Client, state *applyState) error
 }
@@ -47,14 +47,12 @@ var kindRegistry = []kindSpec{
 		kind:  KindControls,
 		fetch: fetchControlsKind,
 		build: buildControlsKind,
-		plan:  planControls,
 		apply: applyControlsKind,
 	},
 	{
 		kind:  KindPolicies,
 		fetch: fetchPoliciesKind,
 		build: buildPoliciesKind,
-		plan:  planPolicies,
 		apply: applyPoliciesKind,
 	},
 }
