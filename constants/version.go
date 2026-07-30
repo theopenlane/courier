@@ -15,6 +15,7 @@ var (
 	VerboseCLIVersion = ""
 )
 
+// versionStruct holds the build information rendered by the verbose version output
 type versionStruct struct {
 	Version   string
 	GoVersion string
@@ -26,6 +27,7 @@ type versionStruct struct {
 }
 
 const (
+	// verboseTemplate is the output template for the verbose version information
 	verboseTemplate = `Version: {{.Version}}
 Go Version: {{.GoVersion}}
 Git Commit: {{.Commit}}
@@ -34,6 +36,7 @@ OS/Arch: {{.OS}}/{{.Arch}}
 Dirty: {{.Modified}}`
 )
 
+// init populates the verbose version information from the build info
 func init() {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -63,6 +66,7 @@ func init() {
 	VerboseCLIVersion = vvs.String()
 }
 
+// String renders the verbose version information
 func (vvs *versionStruct) String() string {
 	stringBuilder := &strings.Builder{}
 	tmpl := template.Must(template.New("version").Parse(verboseTemplate))

@@ -5,5 +5,5 @@ host: https://api.theopenlane.io
 token: ""
 # OrganizationID optionally scopes requests to a specific organization, only needed for multi-organization tokens
 organization-id: ""
-# Dir is the workspace directory holding the exported files
-dir: .
+# Dir is the directory holding the exported files
+dir: ./data

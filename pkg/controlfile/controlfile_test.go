@@ -17,8 +17,8 @@ func testControls() []*controlfile.Control {
 			Description: "New hires are required to complete an acknowledgment form upon hire",
 			Category:    "Control Environment",
 			Subcategory: "Integrity and Ethics",
-			MappedControls: []string{
-				"CC1.1",
+			MappedControls: controlfile.MappedControls{
+				"SOC 2": {"CC1.1"},
 			},
 		},
 		{
@@ -30,57 +30,56 @@ func testControls() []*controlfile.Control {
 }
 
 func TestControlsRoundTrip(t *testing.T) {
-	data, err := controlfile.MarshalControls(testControls())
+	data, err := controlfile.Marshal(testControls())
 	require.NoError(t, err)
 
-	parsed, err := controlfile.UnmarshalControls(data)
+	parsed, err := controlfile.Unmarshal[controlfile.Control](data)
 	require.NoError(t, err)
-	require.NoError(t, controlfile.ValidateControls(parsed))
+	require.NoError(t, controlfile.Validate(parsed))
 
 	// data round-trips verbatim: no trimming, reordering, or deduplication
 	assert.Equal(t, testControls(), parsed)
 
 	// re-marshaling parsed data is byte-stable
-	again, err := controlfile.MarshalControls(parsed)
+	again, err := controlfile.Marshal(parsed)
 	require.NoError(t, err)
 	assert.Equal(t, string(data), string(again))
 }
 
 func TestValidateControls(t *testing.T) {
-	require.NoError(t, controlfile.ValidateControls(testControls()))
+	require.NoError(t, controlfile.Validate(testControls()))
 
 	// a missing refCode fails schema validation, uniqueness is enforced by the API
 	controls := testControls()
 	controls[1].RefCode = ""
 
-	data, err := controlfile.MarshalControls(controls)
+	data, err := controlfile.Marshal(controls)
 	require.NoError(t, err)
 
-	parsed, err := controlfile.UnmarshalControls(data)
+	parsed, err := controlfile.Unmarshal[controlfile.Control](data)
 	require.NoError(t, err)
-	assert.ErrorIs(t, controlfile.ValidateControls(parsed), controlfile.ErrSchemaValidation)
+	assert.ErrorIs(t, controlfile.Validate(parsed), controlfile.ErrSchemaValidation)
 }
 
 func TestPoliciesRoundTrip(t *testing.T) {
 	policies := []*controlfile.Policy{
 		{
-			Name:           "Application Security Policy",
-			PolicyType:     "Security",
-			MarkdownPath:   "data/demo/policies/application.md",
-			Tags:           []string{"application", "security", "ASP"},
-			MappedControls: []string{"CC6.2"},
+			Name:         "Application Security Policy",
+			PolicyType:   "Security",
+			MarkdownPath: "data/demo/policies/application.md",
+			Tags:         []string{"application", "security", "ASP"},
 		},
 		{
 			Name: "Availability Policy",
 		},
 	}
 
-	data, err := controlfile.MarshalPolicies(policies)
+	data, err := controlfile.Marshal(policies)
 	require.NoError(t, err)
 
-	parsed, err := controlfile.UnmarshalPolicies(data)
+	parsed, err := controlfile.Unmarshal[controlfile.Policy](data)
 	require.NoError(t, err)
-	require.NoError(t, controlfile.ValidatePolicies(parsed))
+	require.NoError(t, controlfile.Validate(parsed))
 
 	require.Len(t, parsed, 2)
 	assert.Equal(t, "Application Security Policy", parsed[0].Name)
@@ -92,15 +91,15 @@ func TestPoliciesRoundTrip(t *testing.T) {
 }
 
 func TestValidatePolicies(t *testing.T) {
-	require.NoError(t, controlfile.ValidatePolicies([]*controlfile.Policy{{Name: "Access Policy"}}))
+	require.NoError(t, controlfile.Validate([]*controlfile.Policy{{Name: "Access Policy"}}))
 
 	// a missing name fails schema validation
-	data, err := controlfile.MarshalPolicies([]*controlfile.Policy{{PolicyType: "Security"}})
+	data, err := controlfile.Marshal([]*controlfile.Policy{{PolicyType: "Security"}})
 	require.NoError(t, err)
 
-	parsed, err := controlfile.UnmarshalPolicies(data)
+	parsed, err := controlfile.Unmarshal[controlfile.Policy](data)
 	require.NoError(t, err)
-	assert.ErrorIs(t, controlfile.ValidatePolicies(parsed), controlfile.ErrSchemaValidation)
+	assert.ErrorIs(t, controlfile.Validate(parsed), controlfile.ErrSchemaValidation)
 }
 
 func TestPolicyMarkdownRoundTrip(t *testing.T) {
@@ -128,4 +127,36 @@ func TestPolicyMarkdownRoundTrip(t *testing.T) {
 
 func TestPolicyMarkdownPath(t *testing.T) {
 	assert.Equal(t, "policies/application-security-policy.md", controlfile.PolicyMarkdownPath("Application Security Policy"))
+
+	// names with no path-safe characters get a stable derived name rather than
+	// collapsing onto policies/.md
+	nonLatin := controlfile.PolicyMarkdownPath("策略")
+	assert.NotEqual(t, "policies/.md", nonLatin)
+	assert.Equal(t, nonLatin, controlfile.PolicyMarkdownPath("策略"))
+	assert.NotEqual(t, nonLatin, controlfile.PolicyMarkdownPath("政策"))
+
+	// traversal in a name cannot escape the policies directory
+	assert.Equal(t, "policies/etc-passwd.md", controlfile.PolicyMarkdownPath("../../etc/passwd"))
+
+	assert.Equal(t, "policies/access-policy-plc_1.md", controlfile.PolicyMarkdownPathWithID("Access Policy", "PLC_1"))
+}
+
+func TestValidateMarkdownPath(t *testing.T) {
+	require.NoError(t, controlfile.ValidateMarkdownPath("policies/access-policy.md"))
+	require.NoError(t, controlfile.ValidateMarkdownPath("nested/dir/access.MD"))
+
+	for _, bad := range []string{"../secret.env", "/etc/passwd", "policies/../../x.md", "policies/notes.txt", ""} {
+		assert.ErrorIs(t, controlfile.ValidateMarkdownPath(bad), controlfile.ErrUnsafeMarkdownPath, bad)
+	}
+}
+
+func TestUnmarshalRejectsUnknownFields(t *testing.T) {
+	_, err := controlfile.Unmarshal[controlfile.Control]([]byte("- refCode: A\n  descriptionn: typo\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "descriptionn")
+
+	// a controls file no longer parses as a policy manifest, so LoadFile can
+	// discriminate on content
+	_, err = controlfile.Unmarshal[controlfile.Policy]([]byte("- refCode: A\n  category: X\n"))
+	assert.Error(t, err)
 }

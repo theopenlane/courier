@@ -8,4 +8,8 @@ var (
 
 	// ErrMissingFrontmatter is returned when a policy markdown document has no frontmatter block
 	ErrMissingFrontmatter = errors.New("policy markdown is missing a frontmatter block")
+
+	// ErrUnsafeMarkdownPath is returned when a manifest markdownPath resolves outside the
+	// store directory or does not name a markdown document
+	ErrUnsafeMarkdownPath = errors.New("unsafe markdown path")
 )

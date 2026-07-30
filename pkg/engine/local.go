@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,14 +15,18 @@ import (
 )
 
 const (
-	dirPerm  = 0o755
+	// dirPerm is the permission mode for created directories
+	dirPerm = 0o755
+	// filePerm is the permission mode for written files
 	filePerm = 0o644
 )
 
-// Workspace is the parsed content of an export directory: the control
+// Store is the parsed content of an export directory: the control
 // inventory, the policy manifest, and the raw policy markdown documents
-// keyed by workspace-relative path
-type Workspace struct {
+// keyed by store-relative path
+type Store struct {
+	// Dir is the directory the files were loaded from
+	Dir string
 	// Controls is the parsed control inventory
 	Controls []*controlfile.Control
 	// Policies is the parsed policy manifest
@@ -32,10 +35,77 @@ type Workspace struct {
 	PolicyMarkdown map[string][]byte
 }
 
-// LoadWorkspace parses controls.yaml, policies.yaml, and every referenced
+// LoadFile parses a single YAML file and resolves whether it holds controls
+// or a policy manifest by validating against the document schemas, the file
+// name carries no meaning. Policy documents resolve relative to the file's
+// directory
+func LoadFile(path string) (*Store, []Kind, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	dir := filepath.Dir(path)
+
+	if controls, err := controlfile.Unmarshal[controlfile.Control](data); err == nil && len(controls) > 0 {
+		if err := controlfile.Validate(controls); err == nil {
+			return &Store{Dir: dir, Controls: controls, PolicyMarkdown: map[string][]byte{}}, []Kind{KindControls}, nil
+		}
+	}
+
+	if policies, err := controlfile.Unmarshal[controlfile.Policy](data); err == nil && len(policies) > 0 {
+		if err := controlfile.Validate(policies); err == nil {
+			store := &Store{Dir: dir, Policies: policies, PolicyMarkdown: map[string][]byte{}}
+			controlfile.NormalizePolicies(store.Policies)
+
+			if err := loadPolicyDocuments(store); err != nil {
+				return nil, nil, err
+			}
+
+			return store, []Kind{KindPolicies}, nil
+		}
+	}
+
+	return nil, nil, fmtErr(ErrUnrecognizedFile, path)
+}
+
+// documentPath resolves a manifest markdownPath against the store, rejecting
+// paths that would reach outside it
+func documentPath(dir, rel string) (string, error) {
+	if err := controlfile.ValidateMarkdownPath(rel); err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, filepath.FromSlash(rel)), nil
+}
+
+// loadPolicyDocuments reads the markdown document for every manifest entry
+func loadPolicyDocuments(store *Store) error {
+	for _, policy := range store.Policies {
+		path, err := documentPath(store.Dir, policy.MarkdownPath)
+		if err != nil {
+			return err
+		}
+
+		markdown, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return fmtErr(ErrMissingMarkdown, policy.MarkdownPath)
+			}
+
+			return err
+		}
+
+		store.PolicyMarkdown[policy.MarkdownPath] = markdown
+	}
+
+	return nil
+}
+
+// NewStore parses controls.yaml, policies.yaml, and every referenced
 // markdown document under dir, missing files load as empty
-func LoadWorkspace(dir string) (*Workspace, error) {
-	ws := &Workspace{PolicyMarkdown: map[string][]byte{}}
+func NewStore(dir string) (*Store, error) {
+	store := &Store{Dir: dir, PolicyMarkdown: map[string][]byte{}}
 
 	data, err := readOptional(filepath.Join(dir, controlfile.ControlsFile))
 	if err != nil {
@@ -43,7 +113,7 @@ func LoadWorkspace(dir string) (*Workspace, error) {
 	}
 
 	if data != nil {
-		if ws.Controls, err = controlfile.UnmarshalControls(data); err != nil {
+		if store.Controls, err = controlfile.Unmarshal[controlfile.Control](data); err != nil {
 			return nil, err
 		}
 	}
@@ -54,68 +124,50 @@ func LoadWorkspace(dir string) (*Workspace, error) {
 	}
 
 	if data != nil {
-		if ws.Policies, err = controlfile.UnmarshalPolicies(data); err != nil {
+		if store.Policies, err = controlfile.Unmarshal[controlfile.Policy](data); err != nil {
 			return nil, err
 		}
 	}
 
-	controlfile.NormalizePolicies(ws.Policies)
-
-	for _, policy := range ws.Policies {
-		markdown, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(policy.MarkdownPath)))
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil, fmtErr(ErrMissingMarkdown, policy.MarkdownPath)
-			}
-
-			return nil, err
-		}
-
-		ws.PolicyMarkdown[policy.MarkdownPath] = markdown
+	// validate before normalizing, which dereferences every entry
+	if err := controlfile.Validate(store.Controls); err != nil {
+		return nil, err
 	}
 
-	return ws, nil
+	if err := controlfile.Validate(store.Policies); err != nil {
+		return nil, err
+	}
+
+	controlfile.NormalizePolicies(store.Policies)
+
+	if err := loadPolicyDocuments(store); err != nil {
+		return nil, err
+	}
+
+	return store, nil
 }
 
-// policyMarkdown returns the raw markdown document and its body for a
-// manifest entry
-func (ws *Workspace) policyMarkdown(policy *controlfile.Policy) ([]byte, string, error) {
-	markdown := ws.PolicyMarkdown[policy.MarkdownPath]
+// policyMarkdown returns the raw markdown document, its frontmatter, and its
+// body for a manifest entry
+func (store *Store) policyMarkdown(policy *controlfile.Policy) ([]byte, controlfile.Frontmatter, string, error) {
+	markdown := store.PolicyMarkdown[policy.MarkdownPath]
 
-	_, body, err := controlfile.SplitPolicyMarkdown(markdown)
+	fm, body, err := controlfile.SplitPolicyMarkdown(markdown)
 	if err != nil {
-		return nil, "", err
+		return nil, controlfile.Frontmatter{}, "", err
 	}
 
-	return markdown, body, nil
+	return markdown, fm, body, nil
 }
 
-// WriteWorkspace writes the inventory, manifest, and markdown documents to
-// dir and removes markdown files under the policies directory that are no
-// longer referenced, returning the relative paths written and removed
-func WriteWorkspace(dir string, controls []*controlfile.Control, policies []*controlfile.Policy, markdown map[string][]byte) (written, removed []string, err error) {
-	controlsData, err := controlfile.MarshalControls(controls)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	policiesData, err := controlfile.MarshalPolicies(policies)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	files := map[string][]byte{
-		controlfile.ControlsFile: controlsData,
-		controlfile.PoliciesFile: policiesData,
-	}
-
-	maps.Copy(files, markdown)
-
-	paths := lo.Keys(files)
+// writeKindFiles writes one kind's rendered files to dir and runs the
+// kind's stale file cleanup, returning the relative paths written and removed
+func writeKindFiles(dir string, rendered kindFiles) (written, removed []string, err error) {
+	paths := lo.Keys(rendered.files)
 	slices.Sort(paths)
 
 	for _, rel := range paths {
-		wrote, err := writeIfChanged(filepath.Join(dir, filepath.FromSlash(rel)), files[rel])
+		wrote, err := writeIfChanged(filepath.Join(dir, filepath.FromSlash(rel)), rendered.files[rel])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -125,9 +177,10 @@ func WriteWorkspace(dir string, controls []*controlfile.Control, policies []*con
 		}
 	}
 
-	removed, err = removeStaleMarkdown(dir, markdown)
-	if err != nil {
-		return nil, nil, err
+	if rendered.cleanup != nil {
+		if removed, err = rendered.cleanup(dir, rendered.files); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return written, removed, nil
@@ -135,7 +188,7 @@ func WriteWorkspace(dir string, controls []*controlfile.Control, policies []*con
 
 // removeStaleMarkdown deletes markdown files under the policies directory
 // that are not part of the current export
-func removeStaleMarkdown(dir string, markdown map[string][]byte) ([]string, error) {
+func removeStaleMarkdown(dir string, rendered map[string][]byte) ([]string, error) {
 	policiesDir := filepath.Join(dir, controlfile.PoliciesDir)
 
 	entries, err := os.ReadDir(policiesDir)
@@ -155,7 +208,7 @@ func removeStaleMarkdown(dir string, markdown map[string][]byte) ([]string, erro
 		}
 
 		rel := controlfile.PoliciesDir + "/" + entry.Name()
-		if _, ok := markdown[rel]; ok {
+		if _, ok := rendered[rel]; ok {
 			continue
 		}
 
@@ -177,36 +230,28 @@ type FormatResult struct {
 	Changed []string
 }
 
-// Format rewrites controls.yaml and policies.yaml into canonical form and
-// validates both, markdown documents are left untouched. With check set the
-// files are not rewritten
+// Format rewrites controls.yaml and policies.yaml into canonical form,
+// markdown documents are left untouched. With check set the files are not
+// rewritten
 func Format(dir string, check bool) (*FormatResult, error) {
-	ws, err := LoadWorkspace(dir)
+	store, err := NewStore(dir)
 	if err != nil {
-		return nil, err
-	}
-
-	if err := controlfile.ValidateControls(ws.Controls); err != nil {
-		return nil, err
-	}
-
-	if err := controlfile.ValidatePolicies(ws.Policies); err != nil {
 		return nil, err
 	}
 
 	canonical := map[string][]byte{}
 
-	if canonical[controlfile.ControlsFile], err = controlfile.MarshalControls(ws.Controls); err != nil {
+	if canonical[controlfile.ControlsFile], err = controlfile.Marshal(store.Controls); err != nil {
 		return nil, err
 	}
 
-	if canonical[controlfile.PoliciesFile], err = controlfile.MarshalPolicies(ws.Policies); err != nil {
+	if canonical[controlfile.PoliciesFile], err = controlfile.Marshal(store.Policies); err != nil {
 		return nil, err
 	}
 
 	empty := map[string]bool{
-		controlfile.ControlsFile: len(ws.Controls) == 0,
-		controlfile.PoliciesFile: len(ws.Policies) == 0,
+		controlfile.ControlsFile: len(store.Controls) == 0,
+		controlfile.PoliciesFile: len(store.Policies) == 0,
 	}
 
 	result := &FormatResult{}

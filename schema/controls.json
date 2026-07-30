@@ -29,10 +29,59 @@
           "type": "array"
         },
         "mappedControls": {
+          "$ref": "#/$defs/MappedControls"
+        },
+        "subcontrols": {
+          "items": {
+            "$ref": "#/$defs/Subcontrol"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "refCode"
+      ]
+    },
+    "MappedControls": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "type": "object"
+    },
+    "Subcontrol": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "refCode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "subcategory": {
+          "type": "string"
+        },
+        "tags": {
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "mappedControls": {
+          "$ref": "#/$defs/MappedControls"
         }
       },
       "additionalProperties": false,
