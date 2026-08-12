@@ -22,28 +22,40 @@ func buildControls(state *RemoteState) []*controlfile.Control {
 
 	for _, rs := range state.Subcontrols {
 		subcontrols[rs.ControlID] = append(subcontrols[rs.ControlID], &controlfile.Subcontrol{
-			ID:             rs.ID,
-			RefCode:        rs.RefCode,
-			Title:          rs.Title,
-			Description:    plainText(rs.Description),
-			Category:       rs.Category,
-			Subcategory:    rs.Subcategory,
-			Tags:           rs.Tags,
-			MappedControls: targetsByControl[rs.ID],
+			ID:                 rs.ID,
+			RefCode:            rs.RefCode,
+			Title:              rs.Title,
+			Description:        plainText(rs.Description),
+			Category:           rs.Category,
+			Subcategory:        rs.Subcategory,
+			Status:             rs.Status,
+			CategoryID:         rs.CategoryID,
+			ControlOwner:       rs.ControlOwner,
+			Delegate:           rs.Delegate,
+			ReferenceID:        rs.ReferenceID,
+			AuditorReferenceID: rs.AuditorReferenceID,
+			Tags:               rs.Tags,
+			MappedControls:     targetsByControl[rs.ID],
 		})
 	}
 
 	return lo.Map(state.Controls, func(rc RemoteControl, _ int) *controlfile.Control {
 		return &controlfile.Control{
-			ID:             rc.ID,
-			RefCode:        rc.RefCode,
-			Title:          rc.Title,
-			Description:    plainText(rc.Description),
-			Category:       rc.Category,
-			Subcategory:    rc.Subcategory,
-			Tags:           rc.Tags,
-			MappedControls: targetsByControl[rc.ID],
-			Subcontrols:    subcontrols[rc.ID],
+			ID:                 rc.ID,
+			RefCode:            rc.RefCode,
+			Title:              rc.Title,
+			Description:        plainText(rc.Description),
+			Category:           rc.Category,
+			Subcategory:        rc.Subcategory,
+			Status:             rc.Status,
+			CategoryID:         rc.CategoryID,
+			ControlOwner:       rc.ControlOwner,
+			Delegate:           rc.Delegate,
+			ReferenceID:        rc.ReferenceID,
+			AuditorReferenceID: rc.AuditorReferenceID,
+			Tags:               rc.Tags,
+			MappedControls:     targetsByControl[rc.ID],
+			Subcontrols:        subcontrols[rc.ID],
 		}
 	})
 }

@@ -28,10 +28,37 @@ type RemoteControl struct {
 	Category string `json:"category"`
 	// Subcategory is the subcategory of the control
 	Subcategory string `json:"subcategory"`
+	// Status is the status of the control, e.g. APPROVED, DRAFT
+	Status string `json:"status"`
+	// CategoryID is the identifier of the category the control belongs to
+	CategoryID string `json:"categoryID"`
+	// ControlOwnerID is the Openlane ULID of the group that owns the control
+	ControlOwnerID string `json:"controlOwnerID"`
+	// ControlOwner is the display name of that group, resolved from the
+	// organization's groups since the control record carries only the ID
+	ControlOwner string `json:"controlOwner"`
+	// DelegateID is the Openlane ULID of the group the control is delegated to
+	DelegateID string `json:"delegateID"`
+	// Delegate is the display name of that group, resolved the same way as ControlOwner
+	Delegate string `json:"delegate"`
+	// ReferenceID is the internal reference id of the control
+	ReferenceID string `json:"referenceID"`
+	// AuditorReferenceID is the external auditor id of the control
+	AuditorReferenceID string `json:"auditorReferenceID"`
 	// ReferenceFramework is the framework short name when the control derives from a standard
 	ReferenceFramework string `json:"referenceFramework"`
 	// Tags associated with the control
 	Tags []string `json:"tags"`
+}
+
+// RemoteGroup is an organization group as it exists in the API, groups are the
+// records a control owner and a delegate point at
+type RemoteGroup struct {
+	// ID is the Openlane ULID of the group
+	ID string `json:"id"`
+	// DisplayName is how the group is named in the Openlane UI, it is what the
+	// files carry rather than the group's name field
+	DisplayName string `json:"displayName"`
 }
 
 // RemoteRef identifies a control or subcontrol participating in a mapping or
@@ -103,6 +130,8 @@ type RemoteState struct {
 	Mappings []RemoteMapping
 	// Policies are the organization-owned internal policies
 	Policies []RemotePolicy
+	// Groups are the organization's groups, they name the control owners
+	Groups []RemoteGroup
 }
 
 // pager is the page-info shape shared by generated connection types
@@ -179,11 +208,58 @@ func fetchControlsKind(ctx context.Context, c *Client, state *RemoteState) error
 		return err
 	}
 
+	// the control record carries only the owner's ID, the groups name it and
+	// apply resolves the other way round for the names the files carry
+	groups, err := c.fetchGroups(ctx)
+	if err != nil {
+		return err
+	}
+
 	state.Controls = controls
 	state.Subcontrols = subcontrols
 	state.Mappings = mappings
+	state.Groups = groups
+
+	resolveGroupNames(state)
 
 	return nil
+}
+
+// resolveGroupNames names the groups each control and subcontrol points at,
+// the records carry only group IDs and the files carry display names
+func resolveGroupNames(state *RemoteState) {
+	names := groupNamesByID(state.Groups)
+
+	for i := range state.Controls {
+		state.Controls[i].ControlOwner = names[state.Controls[i].ControlOwnerID]
+		state.Controls[i].Delegate = names[state.Controls[i].DelegateID]
+	}
+
+	for i := range state.Subcontrols {
+		state.Subcontrols[i].ControlOwner = names[state.Subcontrols[i].ControlOwnerID]
+		state.Subcontrols[i].Delegate = names[state.Subcontrols[i].DelegateID]
+	}
+}
+
+// fetchGroups pages through the organization's groups
+func (c *Client) fetchGroups(ctx context.Context) ([]RemoteGroup, error) {
+	var groups []RemoteGroup
+
+	err := paginate(func(after *string) (*graphclient.GetGroups_Groups_PageInfo, error) {
+		resp, err := c.typed.GetGroups(ctx, new(defaultPageSize), nil, after, nil, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, edge := range resp.Groups.Edges {
+			node := edge.GetNode()
+			groups = append(groups, RemoteGroup{ID: node.ID, DisplayName: node.DisplayName})
+		}
+
+		return &resp.Groups.PageInfo, nil
+	})
+
+	return groups, err
 }
 
 // fetchSubcontrols pages through the organization-owned subcontrols that are
@@ -213,6 +289,12 @@ func (c *Client) fetchSubcontrols(ctx context.Context) ([]RemoteSubcontrol, erro
 					Description:        lo.FromPtr(node.Description),
 					Category:           lo.FromPtr(node.Category),
 					Subcategory:        lo.FromPtr(node.Subcategory),
+					Status:             lo.FromPtr(node.Status).String(),
+					CategoryID:         lo.FromPtr(node.CategoryID),
+					ControlOwnerID:     lo.FromPtr(node.ControlOwnerID),
+					DelegateID:         lo.FromPtr(node.DelegateID),
+					ReferenceID:        lo.FromPtr(node.ReferenceID),
+					AuditorReferenceID: lo.FromPtr(node.AuditorReferenceID),
 					ReferenceFramework: lo.FromPtr(node.ReferenceFramework),
 					Tags:               node.Tags,
 				},
@@ -257,6 +339,12 @@ func (c *Client) fetchControls(ctx context.Context, where *graphclient.ControlWh
 				Description:        lo.FromPtr(node.Description),
 				Category:           lo.FromPtr(node.Category),
 				Subcategory:        lo.FromPtr(node.Subcategory),
+				Status:             lo.FromPtr(node.Status).String(),
+				CategoryID:         lo.FromPtr(node.CategoryID),
+				ControlOwnerID:     lo.FromPtr(node.ControlOwnerID),
+				DelegateID:         lo.FromPtr(node.DelegateID),
+				ReferenceID:        lo.FromPtr(node.ReferenceID),
+				AuditorReferenceID: lo.FromPtr(node.AuditorReferenceID),
 				ReferenceFramework: lo.FromPtr(node.ReferenceFramework),
 				Tags:               node.Tags,
 			})

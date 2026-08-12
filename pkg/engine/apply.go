@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/samber/lo"
@@ -25,6 +26,9 @@ type Change struct {
 	// Detail is the managed fields that differ, or the mapping targets added,
 	// empty when the record is created outright
 	Detail []string `json:"detail,omitempty"`
+	// Fields is the same field changes with the values on either side, for
+	// reports that show the edit rather than name it
+	Fields []FieldDiff `json:"fields,omitempty"`
 }
 
 // ApplyResult summarizes what an apply changed in the API
@@ -57,6 +61,9 @@ type ApplyResult struct {
 type ApplyOptions struct {
 	// DryRun reports what apply would change without writing anything
 	DryRun bool
+	// KeepStatus writes the status the file carries even when the record's
+	// description changed, which would otherwise send it back for approval
+	KeepStatus bool
 }
 
 // pendingID stands in for a control a dry run would create, so mapping targets
@@ -105,6 +112,121 @@ func matchRemote[R any](id, key string, byID, byKey map[string]R, consumed map[s
 	return r, true
 }
 
+// groupID resolves a group display name to the group it names, field is the
+// document field being resolved so the warning says which one was skipped.
+// Groups are never created here, so a name matching none leaves the value in
+// Openlane alone the way an unset field does
+func (s *applyState) groupID(field, refCode, name string) *string {
+	if name == "" {
+		return nil
+	}
+
+	id, ok := s.groupIDs[strings.ToLower(name)]
+	if !ok {
+		s.result.Warnings = append(s.result.Warnings,
+			fmt.Sprintf("group %q not found, skipping %s of %q", name, field, refCode))
+
+		return nil
+	}
+
+	return &id
+}
+
+// controlStatus resolves a file's status to the enum the API takes, matched
+// case-insensitively. A value naming no status is skipped with a warning so a
+// typo leaves the status in Openlane alone rather than being written as invalid
+func (s *applyState) controlStatus(refCode, status string) *enums.ControlStatus {
+	if status == "" {
+		return nil
+	}
+
+	resolved := enums.ToControlStatus(status)
+	if *resolved == enums.ControlStatusInvalid {
+		s.result.Warnings = append(s.result.Warnings,
+			fmt.Sprintf("status %q not recognized, skipping status of %q", status, refCode))
+
+		return nil
+	}
+
+	return resolved
+}
+
+const (
+	// descriptionField is the changed-field name that sends a control back for
+	// approval, editing what a control says is what needs approving again
+	descriptionField = "description"
+
+	// bodyField is what does the same for a policy, its body is what it says
+	bodyField = "body"
+
+	// statusField names the status in the reported change detail
+	statusField = "status"
+)
+
+// sendsForApproval reports whether an update to these fields moves the record
+// back to needs approval, KeepStatus turns the gate off and writes the file's
+// status verbatim
+func (s *applyState) sendsForApproval(field string, changed fieldChanges) bool {
+	return !s.keepStatus && slices.Contains(changed.names(), field)
+}
+
+// withStatusChange reports the status move alongside the edit that caused it,
+// unless the caller already named status or the record is awaiting approval
+// already, so a dry run says what will be written without doubling up
+func withStatusChange(remoteStatus, needsApproval string, changed fieldChanges) fieldChanges {
+	if slices.Contains(changed.names(), statusField) || strings.EqualFold(remoteStatus, needsApproval) {
+		return changed
+	}
+
+	changed.record(statusField, remoteStatus, needsApproval)
+
+	return changed
+}
+
+// updateStatus is the status a control update writes. A control whose
+// description changed moves to needs approval whatever the file says, so
+// edited control language is never left standing as approved, every other
+// update keeps the file's status
+func (s *applyState) updateStatus(refCode, status, remoteStatus string, changed fieldChanges) (*enums.ControlStatus, fieldChanges) {
+	if !s.sendsForApproval(descriptionField, changed) {
+		return s.controlStatus(refCode, status), changed
+	}
+
+	needsApproval := enums.ControlStatusNeedsApproval
+
+	return &needsApproval, withStatusChange(remoteStatus, needsApproval.String(), changed)
+}
+
+// updatePolicyStatus is updateStatus for a policy, whose body is the text an
+// edit sends back for approval
+func (s *applyState) updatePolicyStatus(name, status, remoteStatus string, changed fieldChanges) (*enums.DocumentStatus, fieldChanges) {
+	if !s.sendsForApproval(bodyField, changed) {
+		return s.documentStatus(name, status), changed
+	}
+
+	needsApproval := enums.DocumentNeedsApproval
+
+	return &needsApproval, withStatusChange(remoteStatus, needsApproval.String(), changed)
+}
+
+// documentStatus resolves a policy's frontmatter status the way controlStatus
+// resolves a control's, a value naming no status is skipped with a warning
+func (s *applyState) documentStatus(name, status string) *enums.DocumentStatus {
+	if status == "" {
+		return nil
+	}
+
+	resolved := enums.ToDocumentStatus(status)
+	if *resolved == enums.DocumentStatusInvalid {
+		s.result.Warnings = append(s.result.Warnings,
+			fmt.Sprintf("status %q not recognized, skipping status of %q", status, name))
+
+		return nil
+	}
+
+	return resolved
+}
+
 // recordError logs a per-record failure and adds it to the run's results
 func (s *applyState) recordError(ctx context.Context, err error) {
 	logx.FromContext(ctx).Error().Err(err).Msg("record failed, continuing")
@@ -125,6 +247,9 @@ type applyState struct {
 	subcontrolsByKey map[string]RemoteSubcontrol
 	// policiesByID indexes the remote policies a manifest entry can match
 	policiesByID map[string]RemotePolicy
+	// groupIDs indexes the organization's group IDs by lowercased name, a
+	// control owner is written as the name of the group that owns it
+	groupIDs map[string]string
 	// mappedTargets holds the references already mapped from each control ID
 	mappedTargets map[string]controlfile.MappedControls
 	// ownedMappings holds the mapping courier owns per control and framework
@@ -140,7 +265,10 @@ type applyState struct {
 	// resolved caches framework-scoped refCode lookups
 	resolved map[string]resolvedRef
 	dryRun   bool
-	result   *ApplyResult
+	// keepStatus writes the file's status verbatim, leaving the approval gate
+	// on an edited description off
+	keepStatus bool
+	result     *ApplyResult
 }
 
 // Apply pushes the store files through the API for the selected kinds in
@@ -181,6 +309,7 @@ func (c *Client) Apply(ctx context.Context, store *Store, kinds []Kind, opts App
 		policiesByID: lo.SliceToMap(remote.Policies, func(rp RemotePolicy) (string, RemotePolicy) {
 			return rp.ID, rp
 		}),
+		groupIDs:      groupIDsByName(remote.Groups),
 		mappedTargets: mappedTargets(remote),
 		ownedMappings: ownedMappings(remote),
 		matched:       map[string]struct{}{},
@@ -188,9 +317,10 @@ func (c *Client) Apply(ctx context.Context, store *Store, kinds []Kind, opts App
 		storeRefCodes: lo.SliceToMap(store.Controls, func(doc *controlfile.Control) (string, struct{}) {
 			return doc.RefCode, struct{}{}
 		}),
-		resolved: map[string]resolvedRef{},
-		dryRun:   opts.DryRun,
-		result:   &ApplyResult{},
+		resolved:   map[string]resolvedRef{},
+		dryRun:     opts.DryRun,
+		keepStatus: opts.KeepStatus,
+		result:     &ApplyResult{},
 	}
 
 	for _, spec := range scoped(kinds) {
@@ -281,18 +411,27 @@ func (c *Client) upsertSubcontrol(ctx context.Context, state *applyState, parent
 			return nil
 		}
 
+		status, changed := state.updateStatus(doc.RefCode, doc.Status, remote.Status, changed)
+
 		if state.dryRun {
-			state.result.UpdatedControls = append(state.result.UpdatedControls, Change{Ref: doc.RefCode, Detail: changed})
+			state.result.UpdatedControls = append(state.result.UpdatedControls, Change{Ref: doc.RefCode, Detail: changed.names(), Fields: changed})
 
 			return nil
 		}
 
 		input := graphclient.UpdateSubcontrolInput{
-			RefCode:     lo.EmptyableToPtr(doc.RefCode),
-			Title:       lo.EmptyableToPtr(doc.Title),
-			Description: lo.EmptyableToPtr(doc.Description),
-			Category:    lo.EmptyableToPtr(doc.Category),
-			Subcategory: lo.EmptyableToPtr(doc.Subcategory),
+			RefCode:            lo.EmptyableToPtr(doc.RefCode),
+			Title:              lo.EmptyableToPtr(doc.Title),
+			Description:        lo.EmptyableToPtr(doc.Description),
+			Category:           lo.EmptyableToPtr(doc.Category),
+			Subcategory:        lo.EmptyableToPtr(doc.Subcategory),
+			Status:             status,
+			CategoryID:         lo.EmptyableToPtr(doc.CategoryID),
+			ControlOwnerID:     state.groupID("controlOwner", doc.RefCode, doc.ControlOwner),
+			DelegateID:         state.groupID("delegate", doc.RefCode, doc.Delegate),
+			ReferenceID:        lo.EmptyableToPtr(doc.ReferenceID),
+			AuditorReferenceID: lo.EmptyableToPtr(doc.AuditorReferenceID),
+			ExternalUUID:       lo.EmptyableToPtr(doc.ExternalUUID),
 		}
 
 		if len(doc.Tags) > 0 {
@@ -303,7 +442,7 @@ func (c *Client) upsertSubcontrol(ctx context.Context, state *applyState, parent
 			return err
 		}
 
-		state.result.UpdatedControls = append(state.result.UpdatedControls, Change{Ref: doc.RefCode, Detail: changed})
+		state.result.UpdatedControls = append(state.result.UpdatedControls, Change{Ref: doc.RefCode, Detail: changed.names(), Fields: changed})
 
 		return nil
 	}
@@ -322,13 +461,20 @@ func (c *Client) upsertSubcontrol(ctx context.Context, state *applyState, parent
 	}
 
 	resp, err := c.typed.CreateSubcontrol(ctx, graphclient.CreateSubcontrolInput{
-		ControlID:   parent.ID,
-		RefCode:     doc.RefCode,
-		Title:       lo.EmptyableToPtr(doc.Title),
-		Description: lo.EmptyableToPtr(doc.Description),
-		Category:    lo.EmptyableToPtr(doc.Category),
-		Subcategory: lo.EmptyableToPtr(doc.Subcategory),
-		Tags:        doc.Tags,
+		ControlID:          parent.ID,
+		RefCode:            doc.RefCode,
+		Title:              lo.EmptyableToPtr(doc.Title),
+		Description:        lo.EmptyableToPtr(doc.Description),
+		Category:           lo.EmptyableToPtr(doc.Category),
+		Subcategory:        lo.EmptyableToPtr(doc.Subcategory),
+		Status:             state.controlStatus(doc.RefCode, doc.Status),
+		CategoryID:         lo.EmptyableToPtr(doc.CategoryID),
+		ControlOwnerID:     state.groupID("controlOwner", doc.RefCode, doc.ControlOwner),
+		DelegateID:         state.groupID("delegate", doc.RefCode, doc.Delegate),
+		ReferenceID:        lo.EmptyableToPtr(doc.ReferenceID),
+		AuditorReferenceID: lo.EmptyableToPtr(doc.AuditorReferenceID),
+		ExternalUUID:       lo.EmptyableToPtr(doc.ExternalUUID),
+		Tags:               doc.Tags,
 	})
 	if err != nil {
 		if isAlreadyExists(err) {
@@ -353,13 +499,17 @@ func (c *Client) upsertSubcontrol(ctx context.Context, state *applyState, parent
 // same comparison covers both
 func subcontrolAsControl(doc *controlfile.Subcontrol) *controlfile.Control {
 	return &controlfile.Control{
-		ID:          doc.ID,
-		RefCode:     doc.RefCode,
-		Title:       doc.Title,
-		Description: doc.Description,
-		Category:    doc.Category,
-		Subcategory: doc.Subcategory,
-		Tags:        doc.Tags,
+		ID:                 doc.ID,
+		RefCode:            doc.RefCode,
+		Title:              doc.Title,
+		Description:        doc.Description,
+		Category:           doc.Category,
+		Subcategory:        doc.Subcategory,
+		CategoryID:         doc.CategoryID,
+		ControlOwner:       doc.ControlOwner,
+		ReferenceID:        doc.ReferenceID,
+		AuditorReferenceID: doc.AuditorReferenceID,
+		Tags:               doc.Tags,
 	}
 }
 
@@ -390,18 +540,27 @@ func (c *Client) upsertControl(ctx context.Context, state *applyState, doc *cont
 			return nil
 		}
 
+		status, changed := state.updateStatus(doc.RefCode, doc.Status, remote.Status, changed)
+
 		if state.dryRun {
-			state.result.UpdatedControls = append(state.result.UpdatedControls, Change{Ref: doc.RefCode, Detail: changed})
+			state.result.UpdatedControls = append(state.result.UpdatedControls, Change{Ref: doc.RefCode, Detail: changed.names(), Fields: changed})
 
 			return nil
 		}
 
 		input := graphclient.UpdateControlInput{
-			RefCode:     lo.EmptyableToPtr(doc.RefCode),
-			Title:       lo.EmptyableToPtr(doc.Title),
-			Description: lo.EmptyableToPtr(doc.Description),
-			Category:    lo.EmptyableToPtr(doc.Category),
-			Subcategory: lo.EmptyableToPtr(doc.Subcategory),
+			RefCode:            lo.EmptyableToPtr(doc.RefCode),
+			Title:              lo.EmptyableToPtr(doc.Title),
+			Description:        lo.EmptyableToPtr(doc.Description),
+			Category:           lo.EmptyableToPtr(doc.Category),
+			Subcategory:        lo.EmptyableToPtr(doc.Subcategory),
+			Status:             status,
+			CategoryID:         lo.EmptyableToPtr(doc.CategoryID),
+			ControlOwnerID:     state.groupID("controlOwner", doc.RefCode, doc.ControlOwner),
+			DelegateID:         state.groupID("delegate", doc.RefCode, doc.Delegate),
+			ReferenceID:        lo.EmptyableToPtr(doc.ReferenceID),
+			AuditorReferenceID: lo.EmptyableToPtr(doc.AuditorReferenceID),
+			ExternalUUID:       lo.EmptyableToPtr(doc.ExternalUUID),
 		}
 
 		if len(doc.Tags) > 0 {
@@ -412,7 +571,7 @@ func (c *Client) upsertControl(ctx context.Context, state *applyState, doc *cont
 			return err
 		}
 
-		state.result.UpdatedControls = append(state.result.UpdatedControls, Change{Ref: doc.RefCode, Detail: changed})
+		state.result.UpdatedControls = append(state.result.UpdatedControls, Change{Ref: doc.RefCode, Detail: changed.names(), Fields: changed})
 
 		logx.FromContext(ctx).Debug().Str("ref_code", doc.RefCode).Str("id", remote.ID).Msg("updated control")
 
@@ -426,15 +585,24 @@ func (c *Client) upsertControl(ctx context.Context, state *applyState, doc *cont
 	}
 
 	input := graphclient.CreateControlInput{
-		RefCode:     doc.RefCode,
-		Title:       lo.EmptyableToPtr(doc.Title),
-		Description: lo.EmptyableToPtr(doc.Description),
-		Category:    lo.EmptyableToPtr(doc.Category),
-		Subcategory: lo.EmptyableToPtr(doc.Subcategory),
-		Tags:        doc.Tags,
-		Status:      &enums.ControlStatusApproved,
+		RefCode:            doc.RefCode,
+		Title:              lo.EmptyableToPtr(doc.Title),
+		Description:        lo.EmptyableToPtr(doc.Description),
+		Category:           lo.EmptyableToPtr(doc.Category),
+		Subcategory:        lo.EmptyableToPtr(doc.Subcategory),
+		Status:             state.controlStatus(doc.RefCode, doc.Status),
+		CategoryID:         lo.EmptyableToPtr(doc.CategoryID),
+		ControlOwnerID:     state.groupID("controlOwner", doc.RefCode, doc.ControlOwner),
+		DelegateID:         state.groupID("delegate", doc.RefCode, doc.Delegate),
+		ReferenceID:        lo.EmptyableToPtr(doc.ReferenceID),
+		AuditorReferenceID: lo.EmptyableToPtr(doc.AuditorReferenceID),
+		ExternalUUID:       lo.EmptyableToPtr(doc.ExternalUUID),
+		Tags:               doc.Tags,
 	}
 
+	// a control the file gives no status is left to the server, which defaults
+	// it to not implemented. Approving a control is a decision somebody makes,
+	// not something a missing field should stand in for
 	resp, err := c.typed.CreateControl(ctx, input)
 	if err != nil {
 		if isAlreadyExists(err) {
@@ -593,7 +761,8 @@ func (c *Client) upsertPolicy(ctx context.Context, state *applyState, policy *co
 	// is something to write
 	var (
 		satisfies = fm.Satisfies
-		changed   []string
+		changed   fieldChanges
+		status    *enums.DocumentStatus
 	)
 
 	if found {
@@ -607,6 +776,10 @@ func (c *Client) upsertPolicy(ctx context.Context, state *applyState, policy *co
 
 			return nil
 		}
+
+		status, changed = state.updatePolicyStatus(policy.Name, fm.Status, remote.Status, changed)
+	} else {
+		status = state.documentStatus(policy.Name, fm.Status)
 	}
 
 	if !found && id != "" {
@@ -627,7 +800,7 @@ func (c *Client) upsertPolicy(ctx context.Context, state *applyState, policy *co
 		}
 
 		state.result.UpdatedPolicies = append(state.result.UpdatedPolicies,
-			Change{Ref: policy.Name, Detail: append(changed, flattenTargets(resolved)...)})
+			Change{Ref: policy.Name, Detail: append(changed.names(), flattenTargets(resolved)...), Fields: changed})
 
 		return nil
 	}
@@ -645,10 +818,7 @@ func (c *Client) upsertPolicy(ctx context.Context, state *applyState, policy *co
 		Name:                   &name,
 		InternalPolicyKindName: lo.EmptyableToPtr(policy.PolicyType),
 		Revision:               lo.EmptyableToPtr(fm.Revision),
-	}
-
-	if fm.Status != "" {
-		input.Status = enums.ToDocumentStatus(fm.Status)
+		Status:                 status,
 	}
 
 	if tags := effectiveTags(policy, fm); len(tags) > 0 {
@@ -669,7 +839,7 @@ func (c *Client) upsertPolicy(ctx context.Context, state *applyState, policy *co
 		}
 
 		state.result.UpdatedPolicies = append(state.result.UpdatedPolicies,
-			Change{Ref: policy.Name, Detail: append(changed, flattenTargets(resolved)...)})
+			Change{Ref: policy.Name, Detail: append(changed.names(), flattenTargets(resolved)...), Fields: changed})
 
 		logx.FromContext(ctx).Debug().Str("name", policy.Name).Str("id", id).Msg("updated policy")
 

@@ -22,6 +22,27 @@
         "subcategory": {
           "type": "string"
         },
+        "status": {
+          "type": "string"
+        },
+        "categoryID": {
+          "type": "string"
+        },
+        "controlOwner": {
+          "type": "string"
+        },
+        "delegate": {
+          "type": "string"
+        },
+        "referenceID": {
+          "type": "string"
+        },
+        "auditorReferenceID": {
+          "type": "string"
+        },
+        "externalUUID": {
+          "type": "string"
+        },
         "tags": {
           "items": {
             "type": "string"
@@ -72,6 +93,27 @@
           "type": "string"
         },
         "subcategory": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "categoryID": {
+          "type": "string"
+        },
+        "controlOwner": {
+          "type": "string"
+        },
+        "delegate": {
+          "type": "string"
+        },
+        "referenceID": {
+          "type": "string"
+        },
+        "auditorReferenceID": {
+          "type": "string"
+        },
+        "externalUUID": {
           "type": "string"
         },
         "tags": {

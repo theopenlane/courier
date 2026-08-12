@@ -15,38 +15,128 @@ import (
 // Remote values are normalized the same way pull renders them, so a record
 // written by pull compares equal to its file until someone edits it
 
+// changedString reports whether a managed string differs from the remote
+// value, an unset field is unmanaged and never counts as a change
+func changedString(doc, remote string) bool {
+	return doc != "" && doc != remote
+}
+
+// changedStringPtr is changedString against a remote value the API leaves unset
+func changedStringPtr(doc string, remote *string) bool {
+	return changedString(doc, lo.FromPtr(remote))
+}
+
+// changedFold is changedString for values that resolve case-insensitively, so
+// casing alone is not an edit
+func changedFold(doc, remote string) bool {
+	return doc != "" && !strings.EqualFold(doc, remote)
+}
+
+// changedSlice reports whether a managed list differs from the remote list,
+// order is not significant and an empty list is unmanaged
+func changedSlice(doc, remote []string) bool {
+	return len(doc) > 0 && !sameValues(doc, remote)
+}
+
+// FieldDiff is one managed field that differs, carrying the value in Openlane
+// and the value the file would write, so a report can show the edit itself
+type FieldDiff struct {
+	// Field is the managed field name, as the file spells it
+	Field string `json:"field"`
+	// From is the value in Openlane, empty when the record does not set it
+	From string `json:"from,omitempty"`
+	// To is the value the file carries
+	To string `json:"to,omitempty"`
+}
+
+// fieldChanges collects the managed fields that differ, in the order compared
+type fieldChanges []FieldDiff
+
+// record adds a field whose values differ
+func (f *fieldChanges) record(field, from, to string) {
+	*f = append(*f, FieldDiff{Field: field, From: from, To: to})
+}
+
+// str compares a managed string
+func (f *fieldChanges) str(field, doc, remote string) {
+	if changedString(doc, remote) {
+		f.record(field, remote, doc)
+	}
+}
+
+// strPtr compares a managed string against a remote value the API leaves unset
+func (f *fieldChanges) strPtr(field, doc string, remote *string) {
+	if changedStringPtr(doc, remote) {
+		f.record(field, lo.FromPtr(remote), doc)
+	}
+}
+
+// fold compares a value that resolves case-insensitively
+func (f *fieldChanges) fold(field, doc, remote string) {
+	if changedFold(doc, remote) {
+		f.record(field, remote, doc)
+	}
+}
+
+// slice compares a managed list, order is not significant
+func (f *fieldChanges) slice(field string, doc, remote []string) {
+	if changedSlice(doc, remote) {
+		f.record(field, strings.Join(remote, ", "), strings.Join(doc, ", "))
+	}
+}
+
+// names lists the changed field names, the form the status gate and the
+// terminal output read
+func (f fieldChanges) names() []string {
+	return lo.Map(f, func(d FieldDiff, _ int) string { return d.Field })
+}
+
 // changedControlFields names the managed fields of a control that differ from
 // the record in Openlane, in file order
-func changedControlFields(doc *controlfile.Control, remote RemoteControl) []string {
-	var changed []string
+func changedControlFields(doc *controlfile.Control, remote RemoteControl) fieldChanges {
+	var changed fieldChanges
 
 	// only meaningful when the entry matched by ID, a refCode change on an
 	// entry without one reads as a new control and is created instead
 	if doc.ID != "" && doc.RefCode != remote.RefCode {
-		changed = append(changed, "refCode")
+		changed.record("refCode", remote.RefCode, doc.RefCode)
 	}
 
-	if doc.Title != "" && doc.Title != remote.Title {
-		changed = append(changed, "title")
-	}
+	changed.str("title", doc.Title, remote.Title)
+	changed.str("description", doc.Description, plainText(remote.Description))
+	changed.str("category", doc.Category, remote.Category)
+	changed.str("subcategory", doc.Subcategory, remote.Subcategory)
 
-	if doc.Description != "" && doc.Description != plainText(remote.Description) {
-		changed = append(changed, "description")
-	}
+	// statuses resolve case-insensitively, as the enum parses them
+	changed.fold("status", doc.Status, remote.Status)
 
-	if doc.Category != "" && doc.Category != remote.Category {
-		changed = append(changed, "category")
-	}
+	changed.str("categoryID", doc.CategoryID, remote.CategoryID)
 
-	if doc.Subcategory != "" && doc.Subcategory != remote.Subcategory {
-		changed = append(changed, "subcategory")
-	}
+	// group display names resolve case-insensitively, so casing alone is not an edit
+	changed.fold("controlOwner", doc.ControlOwner, remote.ControlOwner)
+	changed.fold("delegate", doc.Delegate, remote.Delegate)
 
-	if len(doc.Tags) > 0 && !sameValues(doc.Tags, remote.Tags) {
-		changed = append(changed, "tags")
-	}
+	changed.str("referenceID", doc.ReferenceID, remote.ReferenceID)
+	changed.str("auditorReferenceID", doc.AuditorReferenceID, remote.AuditorReferenceID)
+	changed.slice("tags", doc.Tags, remote.Tags)
 
 	return changed
+}
+
+// groupNamesByID indexes group display names by their Openlane ULID, so the
+// owner and delegate of a control render as the names the file carries
+func groupNamesByID(groups []RemoteGroup) map[string]string {
+	return lo.SliceToMap(groups, func(g RemoteGroup) (string, string) {
+		return g.ID, g.DisplayName
+	})
+}
+
+// groupIDsByName indexes group IDs by lowercased display name, the file names
+// the group and apply resolves it the way refCodes resolve, case-insensitively
+func groupIDsByName(groups []RemoteGroup) map[string]string {
+	return lo.SliceToMap(groups, func(g RemoteGroup) (string, string) {
+		return strings.ToLower(g.DisplayName), g.ID
+	})
 }
 
 // The server parses the uploaded document and its frontmatter overrides the
@@ -74,20 +164,12 @@ func effectiveTags(policy *controlfile.Policy, fm controlfile.Frontmatter) []str
 
 // changedPolicyFields names the managed fields and the body of a policy that
 // differ from the record in Openlane, in document order
-func changedPolicyFields(policy *controlfile.Policy, fm controlfile.Frontmatter, body string, remote RemotePolicy) []string {
-	var changed []string
+func changedPolicyFields(policy *controlfile.Policy, fm controlfile.Frontmatter, body string, remote RemotePolicy) fieldChanges {
+	var changed fieldChanges
 
-	if name := effectiveName(policy, fm); name != "" && name != remote.Name {
-		changed = append(changed, "name")
-	}
-
-	if policy.PolicyType != "" && policy.PolicyType != lo.FromPtr(remote.KindName) {
-		changed = append(changed, "policyType")
-	}
-
-	if fm.Status != "" && !strings.EqualFold(fm.Status, remote.Status) {
-		changed = append(changed, "status")
-	}
+	changed.str("name", effectiveName(policy, fm), remote.Name)
+	changed.strPtr("policyType", policy.PolicyType, remote.KindName)
+	changed.fold("status", fm.Status, remote.Status)
 
 	// revision is not compared: the server bumps it after every write, so the
 	// file is stale by one the moment an apply lands. Treating that as an edit
@@ -95,12 +177,10 @@ func changedPolicyFields(policy *controlfile.Policy, fm controlfile.Frontmatter,
 	// file's revision still goes out with a real change, it just cannot be the
 	// thing that triggers one
 
-	if tags := effectiveTags(policy, fm); len(tags) > 0 && !sameValues(tags, remote.Tags) {
-		changed = append(changed, "tags")
-	}
+	changed.slice("tags", effectiveTags(policy, fm), remote.Tags)
 
-	if body != renderBody(remote.Details) {
-		changed = append(changed, "body")
+	if remoteBody := renderBody(remote.Details); body != remoteBody {
+		changed.record("body", remoteBody, body)
 	}
 
 	return changed

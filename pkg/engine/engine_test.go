@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vektah/gqlparser/v2/gqlerror"
 
+	"github.com/theopenlane/core/common/enums"
 	"github.com/theopenlane/go-client/graphclient"
 
 	"github.com/theopenlane/courier/pkg/controlfile"
@@ -22,11 +23,19 @@ func remoteFixture() *RemoteState {
 	return &RemoteState{
 		Controls: []RemoteControl{
 			{
-				ID:          "CTL_custom1",
-				RefCode:     "CC1.1.3",
-				Description: "Acknowledgment form on hire",
-				Category:    "Control Environment",
-				Subcategory: "Integrity and Ethics",
+				ID:                 "CTL_custom1",
+				RefCode:            "CC1.1.3",
+				Description:        "Acknowledgment form on hire",
+				Category:           "Control Environment",
+				Subcategory:        "Integrity and Ethics",
+				Status:             "APPROVED",
+				CategoryID:         "CC1.1",
+				ControlOwnerID:     "GRP_1",
+				ControlOwner:       "Security Team",
+				DelegateID:         "GRP_2",
+				Delegate:           "Compliance Team",
+				ReferenceID:        "INT-1",
+				AuditorReferenceID: "AUD-1",
 			},
 			{
 				ID:      "CTL_custom2",
@@ -72,6 +81,13 @@ func TestBuildControlsDerivesMappedControls(t *testing.T) {
 	// controls are written in API order with data verbatim
 	assert.Equal(t, "CC1.1.3", controls[0].RefCode)
 	assert.Equal(t, controlfile.MappedControls{"SOC 2": {"CC1.1"}}, controls[0].MappedControls)
+
+	// groups are written as their display name, not the ID the record carries
+	assert.Equal(t, "Security Team", controls[0].ControlOwner)
+	assert.Equal(t, "Compliance Team", controls[0].Delegate)
+	assert.Equal(t, "CC1.1", controls[0].CategoryID)
+	assert.Equal(t, "INT-1", controls[0].ReferenceID)
+	assert.Equal(t, "AUD-1", controls[0].AuditorReferenceID)
 
 	assert.Equal(t, "CC1.1.1", controls[1].RefCode)
 	assert.Empty(t, controls[1].MappedControls)
@@ -276,12 +292,12 @@ func TestChangedControlFields(t *testing.T) {
 	// the changed fields are named so a dry run says what will be written
 	doc.Title = "New title"
 	doc.Category = "New category"
-	assert.Equal(t, []string{"title", "category"}, changedControlFields(doc, remote))
+	assert.Equal(t, []string{"title", "category"}, changedControlFields(doc, remote).names())
 
 	// a refCode rename on a matched control is an edit, not a new control
 	renamed := buildControls(remoteFixture())[0]
 	renamed.RefCode = "CC1.1.9"
-	assert.Equal(t, []string{"refCode"}, changedControlFields(renamed, remote))
+	assert.Equal(t, []string{"refCode"}, changedControlFields(renamed, remote).names())
 
 	// without an ID the refCode is the match key, so a difference means create
 	renamed.ID = ""
@@ -290,12 +306,150 @@ func TestChangedControlFields(t *testing.T) {
 	// tag order is not a change
 	tagged := &controlfile.Control{Tags: []string{"b", "a"}}
 	assert.Empty(t, changedControlFields(tagged, RemoteControl{Tags: []string{"a", "b"}}))
-	assert.Equal(t, []string{"tags"}, changedControlFields(tagged, RemoteControl{Tags: []string{"a"}}))
+	assert.Equal(t, []string{"tags"}, changedControlFields(tagged, RemoteControl{Tags: []string{"a"}}).names())
 
 	// a rich-text description compares against its plain text rendering
 	plain := &controlfile.Control{Description: "Hiring Managers evaluate all candidates."}
 	rich := RemoteControl{Description: `<div><span>Hiring Managers evaluate all candidates.</span></div>`}
 	assert.Empty(t, changedControlFields(plain, rich))
+
+	// the group fields compare by display name, which resolves case-insensitively
+	owned := &controlfile.Control{ControlOwner: "security team", Delegate: "compliance team"}
+	assert.Empty(t, changedControlFields(owned, RemoteControl{ControlOwner: "Security Team", Delegate: "Compliance Team"}))
+	assert.Equal(t, []string{"controlOwner", "delegate"}, changedControlFields(owned, RemoteControl{ControlOwner: "Compliance", Delegate: "Security Team"}).names())
+
+	// the reference fields are managed the same way as the rest
+	refs := &controlfile.Control{CategoryID: "CC1.1", ReferenceID: "INT-1", AuditorReferenceID: "AUD-1"}
+	assert.Equal(t, []string{"categoryID", "referenceID", "auditorReferenceID"}, changedControlFields(refs, RemoteControl{}).names())
+	assert.Empty(t, changedControlFields(refs, RemoteControl{CategoryID: "CC1.1", ReferenceID: "INT-1", AuditorReferenceID: "AUD-1"}))
+
+	// status compares the way the enum parses it, casing is not an edit
+	status := &controlfile.Control{Status: "approved"}
+	assert.Empty(t, changedControlFields(status, RemoteControl{Status: "APPROVED"}))
+	assert.Equal(t, []string{"status"}, changedControlFields(status, RemoteControl{Status: "DRAFT"}).names())
+}
+
+// fields builds the changed-field set an update reports, the values on either
+// side are not what the status gate reads
+func fields(names ...string) fieldChanges {
+	var changed fieldChanges
+
+	for _, name := range names {
+		changed.record(name, "", "")
+	}
+
+	return changed
+}
+
+func TestUpdateStatusNeedsApprovalOnDescriptionEdit(t *testing.T) {
+	state := &applyState{result: &ApplyResult{}}
+
+	// an edit to what the control says sends it back for approval, whatever
+	// the file's own status says, and the move is reported
+	status, changed := state.updateStatus("CC1.1", "APPROVED", "APPROVED", fields("description"))
+	assert.Equal(t, enums.ControlStatusNeedsApproval, lo.FromPtr(status))
+	assert.Equal(t, []string{"description", "status"}, changed.names())
+
+	// the move names the status it writes, so a report can show the edit
+	assert.Equal(t, FieldDiff{Field: "status", From: "APPROVED", To: "NEEDS_APPROVAL"}, changed[1])
+
+	// a record already awaiting approval is not reported as a status change
+	status, changed = state.updateStatus("CC1.1", "APPROVED", "needs_approval", fields("description"))
+	assert.Equal(t, enums.ControlStatusNeedsApproval, lo.FromPtr(status))
+	assert.Equal(t, []string{"description"}, changed.names())
+
+	// status is not doubled up when the file already differs from the record
+	_, changed = state.updateStatus("CC1.1", "DRAFT", "APPROVED", fields("description", "status"))
+	assert.Equal(t, []string{"description", "status"}, changed.names())
+
+	// every other edit keeps the status the file carries
+	status, changed = state.updateStatus("CC1.1", "DRAFT", "APPROVED", fields("title"))
+	assert.Equal(t, enums.ControlStatusDraft, lo.FromPtr(status))
+	assert.Equal(t, []string{"title"}, changed.names())
+
+	// and a record the file gives no status still leaves it alone
+	status, _ = state.updateStatus("CC1.1", "", "APPROVED", fields("title"))
+	assert.Nil(t, status)
+
+	// a policy's body is the text its own gate watches
+	policyStatus, changed := state.updatePolicyStatus("Access Policy", "PUBLISHED", "PUBLISHED", fields("body"))
+	assert.Equal(t, enums.DocumentNeedsApproval, lo.FromPtr(policyStatus))
+	assert.Equal(t, []string{"body", "status"}, changed.names())
+
+	policyStatus, _ = state.updatePolicyStatus("Access Policy", "PUBLISHED", "PUBLISHED", fields("tags"))
+	assert.Equal(t, enums.DocumentPublished, lo.FromPtr(policyStatus))
+
+	// --keep-status writes what the files carry, gate off
+	kept := &applyState{keepStatus: true, result: &ApplyResult{}}
+
+	status, changed = kept.updateStatus("CC1.1", "APPROVED", "APPROVED", fields("description"))
+	assert.Equal(t, enums.ControlStatusApproved, lo.FromPtr(status))
+	assert.Equal(t, []string{"description"}, changed.names())
+
+	policyStatus, changed = kept.updatePolicyStatus("Access Policy", "PUBLISHED", "PUBLISHED", fields("body"))
+	assert.Equal(t, enums.DocumentPublished, lo.FromPtr(policyStatus))
+	assert.Equal(t, []string{"body"}, changed.names())
+}
+
+func TestControlStatusResolution(t *testing.T) {
+	state := &applyState{result: &ApplyResult{}}
+
+	// statuses are matched case-insensitively by the enum
+	assert.Equal(t, enums.ControlStatusApproved, lo.FromPtr(state.controlStatus("CC1.1", "approved")))
+	assert.Equal(t, enums.ControlStatusNotApplicable, lo.FromPtr(state.controlStatus("CC1.1", "NOT_APPLICABLE")))
+	assert.Empty(t, state.result.Warnings)
+
+	// an unset status is unmanaged, courier leaves the status in Openlane alone
+	assert.Nil(t, state.controlStatus("CC1.1", ""))
+	assert.Empty(t, state.result.Warnings)
+
+	// a typo is skipped rather than written to the API as invalid
+	assert.Nil(t, state.controlStatus("CC1.1", "aproved"))
+	assert.Len(t, state.result.Warnings, 1)
+	assert.Contains(t, state.result.Warnings[0], `status "aproved" not recognized`)
+}
+
+func TestResolveGroupNames(t *testing.T) {
+	state := &RemoteState{
+		Controls: []RemoteControl{
+			{ID: "CTL_1", ControlOwnerID: "GRP_1", DelegateID: "GRP_2"},
+			{ID: "CTL_2", ControlOwnerID: "GRP_gone"},
+		},
+		Subcontrols: []RemoteSubcontrol{{RemoteControl: RemoteControl{ID: "SCL_1", ControlOwnerID: "GRP_1"}}},
+		Groups:      []RemoteGroup{{ID: "GRP_1", DisplayName: "Security Team"}, {ID: "GRP_2", DisplayName: "Compliance Team"}},
+	}
+
+	resolveGroupNames(state)
+
+	// the file carries the group display name, the record carries only its ID
+	assert.Equal(t, "Security Team", state.Controls[0].ControlOwner)
+	assert.Equal(t, "Compliance Team", state.Controls[0].Delegate)
+	assert.Equal(t, "Security Team", state.Subcontrols[0].ControlOwner)
+
+	// a group the organization does not have renders as unset
+	assert.Empty(t, state.Controls[1].ControlOwner)
+}
+
+func TestGroupIDResolution(t *testing.T) {
+	groups := []RemoteGroup{{ID: "GRP_1", DisplayName: "Security Team"}}
+
+	assert.Equal(t, "Security Team", groupNamesByID(groups)["GRP_1"])
+
+	state := &applyState{groupIDs: groupIDsByName(groups), result: &ApplyResult{}}
+
+	// the file names the group by display name, casing is not significant
+	assert.Equal(t, "GRP_1", lo.FromPtr(state.groupID("controlOwner", "CC1.1", "security team")))
+	assert.Empty(t, state.result.Warnings)
+
+	// an unset group is unmanaged, courier leaves the value in Openlane alone
+	assert.Nil(t, state.groupID("controlOwner", "CC1.1", ""))
+	assert.Empty(t, state.result.Warnings)
+
+	// groups are never created here, a name matching none is skipped with a
+	// warning naming the field it came from
+	assert.Nil(t, state.groupID("delegate", "CC1.1", "Greg Field"))
+	assert.Len(t, state.result.Warnings, 1)
+	assert.Contains(t, state.result.Warnings[0], `group "Greg Field" not found, skipping delegate of "CC1.1"`)
 }
 
 func TestChangedPolicyFields(t *testing.T) {
@@ -311,7 +465,7 @@ func TestChangedPolicyFields(t *testing.T) {
 	// a policy straight from pull matches its record
 	assert.Empty(t, changedPolicyFields(policies[0], fm, body, remote))
 
-	assert.Equal(t, []string{"body"}, changedPolicyFields(policies[0], fm, body+"\n\nnew paragraph", remote))
+	assert.Equal(t, []string{"body"}, changedPolicyFields(policies[0], fm, body+"\n\nnew paragraph", remote).names())
 
 	// a stored body that differs only by surrounding whitespace is not an edit,
 	// the store trims it on read so an untrimmed comparison never converges
@@ -323,11 +477,11 @@ func TestChangedPolicyFields(t *testing.T) {
 	// edit must be detected rather than silently dropped
 	retagged := fm
 	retagged.Tags = append(slices.Clone(fm.Tags), "new-tag")
-	assert.Equal(t, []string{"tags"}, changedPolicyFields(policies[0], retagged, body, remote))
+	assert.Equal(t, []string{"tags"}, changedPolicyFields(policies[0], retagged, body, remote).names())
 
 	renamed := fm
 	renamed.Title = "Renamed In Frontmatter"
-	assert.Equal(t, []string{"name"}, changedPolicyFields(policies[0], renamed, body, remote))
+	assert.Equal(t, []string{"name"}, changedPolicyFields(policies[0], renamed, body, remote).names())
 
 	// the server bumps revision after every write, so a revision-only
 	// difference must not trigger an update or apply never converges

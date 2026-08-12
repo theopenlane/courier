@@ -39,6 +39,30 @@ type Control struct {
 	// Subcategory is the subcategory of the control, always rendered so
 	// missing values can be filled in directly
 	Subcategory string `yaml:"subcategory" json:"subcategory,omitempty"`
+	// Status is the status of the control, e.g. APPROVED, DRAFT, matched
+	// case-insensitively, a value naming no status is skipped with a warning.
+	// A control created without one is approved
+	Status string `yaml:"status,omitempty" json:"status,omitempty"`
+	// CategoryID is the identifier of the category the control belongs to, as
+	// the source of the inventory names it, e.g. CC1.1 for a SOC 2 category
+	CategoryID string `yaml:"categoryID,omitempty" json:"categoryID,omitempty"`
+	// ControlOwner is the display name of the group that owns the control, the
+	// group must already exist in Openlane, a name matching none is skipped
+	// with a warning rather than created
+	ControlOwner string `yaml:"controlOwner,omitempty" json:"controlOwner,omitempty"`
+	// Delegate is the display name of the group the control is delegated to,
+	// resolved the same way as ControlOwner
+	Delegate string `yaml:"delegate,omitempty" json:"delegate,omitempty"`
+	// ReferenceID is the internal reference id of the control, free-form and
+	// used for tracking the control outside Openlane
+	ReferenceID string `yaml:"referenceID,omitempty" json:"referenceID,omitempty"`
+	// AuditorReferenceID is the external auditor id of the control, used to map
+	// the control to an audit partner's own reference
+	AuditorReferenceID string `yaml:"auditorReferenceID,omitempty" json:"auditorReferenceID,omitempty"`
+	// ExternalUUID is the stable external UUID of the control, used for
+	// deterministic OSCAL export, apply writes it but no control query returns
+	// it, so pull cannot render it back
+	ExternalUUID string `yaml:"externalUUID,omitempty" json:"externalUUID,omitempty"`
 	// Tags associated with the control
 	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 	// MappedControls are the refCodes of controls this control maps to,
@@ -68,6 +92,30 @@ type Subcontrol struct {
 	// Subcategory is the subcategory of the subcontrol, always rendered so
 	// missing values can be filled in directly
 	Subcategory string `yaml:"subcategory" json:"subcategory,omitempty"`
+	// Status is the status of the subcontrol, e.g. APPROVED, DRAFT, matched
+	// case-insensitively, a value naming no status is skipped with a warning.
+	// A subcontrol created without one takes the server default
+	Status string `yaml:"status,omitempty" json:"status,omitempty"`
+	// CategoryID is the identifier of the category the subcontrol belongs to,
+	// as the source of the inventory names it
+	CategoryID string `yaml:"categoryID,omitempty" json:"categoryID,omitempty"`
+	// ControlOwner is the display name of the group that owns the subcontrol,
+	// the group must already exist in Openlane, a name matching none is skipped
+	// with a warning rather than created
+	ControlOwner string `yaml:"controlOwner,omitempty" json:"controlOwner,omitempty"`
+	// Delegate is the display name of the group the subcontrol is delegated to,
+	// resolved the same way as ControlOwner
+	Delegate string `yaml:"delegate,omitempty" json:"delegate,omitempty"`
+	// ReferenceID is the internal reference id of the subcontrol, free-form and
+	// used for tracking the subcontrol outside Openlane
+	ReferenceID string `yaml:"referenceID,omitempty" json:"referenceID,omitempty"`
+	// AuditorReferenceID is the external auditor id of the subcontrol, used to
+	// map it to an audit partner's own reference
+	AuditorReferenceID string `yaml:"auditorReferenceID,omitempty" json:"auditorReferenceID,omitempty"`
+	// ExternalUUID is the stable external UUID of the subcontrol, used for
+	// deterministic OSCAL export, apply writes it but no subcontrol query
+	// returns it, so pull cannot render it back
+	ExternalUUID string `yaml:"externalUUID,omitempty" json:"externalUUID,omitempty"`
 	// Tags associated with the subcontrol
 	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 	// MappedControls are the refCodes of controls this subcontrol maps to,
