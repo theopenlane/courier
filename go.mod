@@ -1,6 +1,6 @@
 module github.com/theopenlane/courier
 
-go 1.26.6
+go 1.26.7
 
 require (
 	github.com/99designs/gqlgen v0.17.94
