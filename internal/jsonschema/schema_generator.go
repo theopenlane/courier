@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/invopop/jsonschema"
-	"github.com/theopenlane/core/pkg/jsonx"
+	"github.com/theopenlane/core/v2/pkg/jsonx"
 	"gopkg.in/yaml.v3"
 
 	"github.com/theopenlane/courier/pkg/controlfile"
