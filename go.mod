@@ -3,7 +3,7 @@ module github.com/theopenlane/courier
 go 1.26.6
 
 require (
-	github.com/99designs/gqlgen v0.17.94
+	github.com/99designs/gqlgen v0.17.95
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/Yamashou/gqlgenc v0.33.0
 	github.com/goccy/go-yaml v1.19.2
@@ -21,9 +21,9 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/theopenlane/core/common v1.1.0
 	github.com/theopenlane/core/v2 v2.3.0
-	github.com/theopenlane/go-client v0.13.1
+	github.com/theopenlane/go-client v0.14.1
 	github.com/theopenlane/newman v0.4.3
-	github.com/vektah/gqlparser/v2 v2.5.36
+	github.com/vektah/gqlparser/v2 v2.5.37
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -55,7 +55,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
-	github.com/gqlgo/gqlgenc v0.38.1 // indirect
+	github.com/gqlgo/gqlgenc v0.38.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
