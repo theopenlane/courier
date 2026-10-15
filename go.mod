@@ -5,7 +5,7 @@ go 1.26.6
 require (
 	github.com/99designs/gqlgen v0.17.94
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
-	github.com/Yamashou/gqlgenc v0.33.0
+	github.com/Yamashou/gqlgenc v0.44.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/invopop/jsonschema v0.14.0
 	github.com/knadh/koanf/parsers/yaml v1.1.1
