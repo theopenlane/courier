@@ -3,16 +3,16 @@ module github.com/theopenlane/courier
 go 1.26.6
 
 require (
-	github.com/99designs/gqlgen v0.17.94
+	github.com/99designs/gqlgen v0.17.95
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/Yamashou/gqlgenc v0.33.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/invopop/jsonschema v0.14.0
 	github.com/knadh/koanf/parsers/yaml v1.1.1
-	github.com/knadh/koanf/providers/env/v2 v2.0.1
+	github.com/knadh/koanf/providers/env/v2 v2.0.2
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/providers/posflag v1.0.2
-	github.com/knadh/koanf/v2 v2.3.6
+	github.com/knadh/koanf/v2 v2.3.8
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/rs/zerolog v1.35.1
 	github.com/samber/lo v1.53.0
@@ -23,7 +23,7 @@ require (
 	github.com/theopenlane/core/v2 v2.3.0
 	github.com/theopenlane/go-client v0.13.1
 	github.com/theopenlane/newman v0.4.3
-	github.com/vektah/gqlparser/v2 v2.5.36
+	github.com/vektah/gqlparser/v2 v2.5.62
 	gopkg.in/yaml.v3 v3.0.1
 )
 
