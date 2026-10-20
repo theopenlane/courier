@@ -24,6 +24,7 @@ require (
 	github.com/theopenlane/go-client v0.15.0
 	github.com/theopenlane/logx v0.1.0
 	github.com/theopenlane/newman v0.5.0
+	github.com/theopenlane/utils v0.7.4
 	github.com/vektah/gqlparser/v2 v2.5.63
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -85,7 +86,6 @@ require (
 	github.com/theopenlane/echox v0.3.0 // indirect
 	github.com/theopenlane/httpsling v0.3.0 // indirect
 	github.com/theopenlane/iam v0.40.0 // indirect
-	github.com/theopenlane/utils v0.7.3 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect
