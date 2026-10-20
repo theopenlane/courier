@@ -11,9 +11,9 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/theopenlane/core/common/enums"
-	"github.com/theopenlane/core/v2/pkg/logx"
 	"github.com/theopenlane/core/v2/pkg/objects/storage"
 	"github.com/theopenlane/go-client/graphclient"
+	"github.com/theopenlane/logx"
 
 	"github.com/theopenlane/courier/pkg/controlfile"
 )
