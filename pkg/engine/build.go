@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"html"
+	"maps"
 	"slices"
 
 	"github.com/samber/lo"
@@ -197,9 +198,7 @@ func buildPoliciesKind(state *RemoteState) (kindFiles, error) {
 	}
 
 	files := map[string][]byte{controlfile.PoliciesFile: data}
-	for path, doc := range markdown {
-		files[path] = doc
-	}
+	maps.Copy(files, markdown)
 
 	return kindFiles{files: files, cleanup: removeStaleMarkdown}, nil
 }

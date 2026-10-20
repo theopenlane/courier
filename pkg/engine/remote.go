@@ -206,17 +206,15 @@ func (c *Client) fetchSubcontrols(ctx context.Context) ([]RemoteSubcontrol, erro
 		for _, edge := range resp.Subcontrols.Edges {
 			node := edge.GetNode()
 			subcontrols = append(subcontrols, RemoteSubcontrol{
-				RemoteControl: RemoteControl{
-					ID:                 node.ID,
-					RefCode:            node.RefCode,
-					Title:              lo.FromPtr(node.Title),
-					Description:        lo.FromPtr(node.Description),
-					Category:           lo.FromPtr(node.Category),
-					Subcategory:        lo.FromPtr(node.Subcategory),
-					ReferenceFramework: lo.FromPtr(node.ReferenceFramework),
-					Tags:               node.Tags,
-				},
-				ControlID: node.ControlID,
+				ID:                 node.ID,
+				RefCode:            node.RefCode,
+				Title:              lo.FromPtr(node.Title),
+				Description:        lo.FromPtr(node.Description),
+				Category:           lo.FromPtr(node.Category),
+				Subcategory:        lo.FromPtr(node.Subcategory),
+				ReferenceFramework: lo.FromPtr(node.ReferenceFramework),
+				Tags:               node.Tags,
+				ControlID:          node.ControlID,
 			})
 		}
 
