@@ -1,6 +1,6 @@
 module github.com/theopenlane/courier
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/99designs/gqlgen v0.17.97
@@ -19,7 +19,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
-	github.com/theopenlane/core/common v1.1.1
+	github.com/theopenlane/core/common v1.2.1
 	github.com/theopenlane/core/v2 v2.8.4
 	github.com/theopenlane/go-client v0.15.0
 	github.com/theopenlane/logx v0.1.0
