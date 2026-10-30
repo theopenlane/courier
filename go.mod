@@ -3,7 +3,7 @@ module github.com/theopenlane/courier
 go 1.27.2
 
 require (
-	github.com/99designs/gqlgen v0.17.97
+	github.com/99designs/gqlgen v0.17.98
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/goccy/go-yaml v1.19.2
 	github.com/gqlgo/gqlgenc v0.44.0
@@ -22,10 +22,10 @@ require (
 	github.com/theopenlane/core/common v1.1.1
 	github.com/theopenlane/core/v2 v2.8.4
 	github.com/theopenlane/go-client v0.15.0
-	github.com/theopenlane/logx v0.1.0
+	github.com/theopenlane/logx v0.1.1
 	github.com/theopenlane/newman v0.5.0
 	github.com/theopenlane/utils v0.7.4
-	github.com/vektah/gqlparser/v2 v2.5.63
+	github.com/vektah/gqlparser/v2 v2.5.64
 	gopkg.in/yaml.v3 v3.0.1
 )
 
