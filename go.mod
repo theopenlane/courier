@@ -1,9 +1,9 @@
 module github.com/theopenlane/courier
 
-go 1.27.2
+go 1.27.3
 
 require (
-	github.com/99designs/gqlgen v0.17.97
+	github.com/99designs/gqlgen v0.17.98
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/goccy/go-yaml v1.19.2
 	github.com/gqlgo/gqlgenc v0.44.0
@@ -19,13 +19,13 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
-	github.com/theopenlane/core/common v1.1.1
-	github.com/theopenlane/core/v2 v2.8.4
-	github.com/theopenlane/go-client v0.15.0
-	github.com/theopenlane/logx v0.1.0
-	github.com/theopenlane/newman v0.5.0
+	github.com/theopenlane/core/common v1.2.3
+	github.com/theopenlane/core/v2 v2.13.1
+	github.com/theopenlane/go-client v0.16.0
+	github.com/theopenlane/logx v0.1.1
+	github.com/theopenlane/newman v0.6.0
 	github.com/theopenlane/utils v0.7.4
-	github.com/vektah/gqlparser/v2 v2.5.63
+	github.com/vektah/gqlparser/v2 v2.5.64
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -59,12 +59,12 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jwx-go/jwkfetch/v4 v4.0.4 // indirect
 	github.com/knadh/koanf/maps v0.1.3 // indirect
-	github.com/labstack/echo/v5 v5.4.1 // indirect
+	github.com/labstack/echo/v5 v5.4.2 // indirect
 	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
 	github.com/lestrrat-go/httprc/v3 v3.0.6 // indirect
-	github.com/lestrrat-go/jwx/v4 v4.5.0 // indirect
+	github.com/lestrrat-go/jwx/v4 v4.6.0 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/lestrrat-go/option/v3 v3.0.0-alpha1 // indirect
 	github.com/mattn/go-colorable v0.1.16 // indirect
@@ -85,10 +85,9 @@ require (
 	github.com/stoewer/go-strcase v1.3.1 // indirect
 	github.com/theopenlane/echox v0.3.0 // indirect
 	github.com/theopenlane/httpsling v0.3.0 // indirect
-	github.com/theopenlane/iam v0.40.0 // indirect
+	github.com/theopenlane/iam v0.41.0 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fastjson v1.6.10 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
@@ -115,7 +114,7 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261019180522-ce908d29299b // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261019180522-ce908d29299b // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e // indirect
 	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
